@@ -1,0 +1,13 @@
+# secrets (dev) — never commit
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+
+# deps and build state
+node_modules/
+.wrangler/
+dist/
+coverage/
+
+.DS_Store
