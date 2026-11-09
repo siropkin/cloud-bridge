@@ -350,13 +350,17 @@ describe('pages people read', () => {
     const start = (await (await hub('/pair/start', { method: 'POST', body: JSON.stringify({ kind: 'chrome', name: 'poplar' }) })).json()) as any;
     const html = await (await hub(`/pair?code=${start.code}`, { headers: { Cookie: cookie } })).text();
     expect(html).toContain('Connect Chrome profile “poplar”?');
-    expect(html).toContain('Check this code matches the one in the chrome-bridge popup: click the chrome-bridge icon in your Chrome toolbar:');
+    // The decision first, in people's words; the code is the cross-check, and the
+    // toolbar icon shows it (the popup closes when this page opens — Ivan, live).
+    expect(html).toContain('Did you just click <strong>Connect</strong> in the chrome-bridge extension? Then click Connect below. If you didn\'t, click Deny');
+    expect(html).toContain(`Code <code>${start.code}</code>. The chrome-bridge icon in your Chrome toolbar shows the same code while it waits.`);
     expect(plain(html)).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b/i);
     const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1];
     const done = await hub('/pair/approve', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code: start.code, csrf, decision: 'approve' }) });
     const next = await done.text();
-    expect(next).toContain('Now add Cloud Bridge to your AI app');
-    expect(next).toContain('✓ Chrome profile “poplar” is connected.');
+    expect(next).toContain('<h1>✅ Chrome profile “poplar” is connected</h1>');
+    expect(next).toContain("You're done: you can close this tab.");
+    expect(next).toContain('Next: add Cloud Bridge to your AI app');
     expect(next).toContain(`<code>${ORIGIN}/mcp</code>`);
     expect(next).toContain('href="https://claude.ai/customize/connectors"');
     expect(next).toContain('href="https://chatgpt.com/plugins"');
@@ -375,6 +379,15 @@ describe('pages people read', () => {
     for (const html of [home, chatgpt, claude]) expect(plain(html)).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b/i);
     const csp = (await hub('/')).headers.get('Content-Security-Policy')!;
     expect(csp).toContain(`script-src 'sha256-${COPY_SCRIPT.hash}'`);
+  });
+  it('every page has a favicon the CSP allows (without one Chrome showed a placeholder Ivan read as a clock)', async () => {
+    const home = await hub('/');
+    expect(await home.text()).toContain('<link rel="icon" href="/favicon.svg"');
+    expect(home.headers.get('Content-Security-Policy')).toContain("img-src 'self'");
+    const icon = await hub('/favicon.svg');
+    expect(icon.headers.get('Content-Type')).toBe('image/svg+xml');
+    expect(await icon.text()).toContain('<svg');
+    expect((await hub('/favicon.ico')).status).toBe(200);
   });
   it('the pinned CSP hash is the copy script\'s real hash', async () => {
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(COPY_SCRIPT.code));

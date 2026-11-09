@@ -4,7 +4,7 @@ The hub of Cloud Bridge. Arms (first: the [chrome-bridge](https://github.com/sir
 
 ## Layout
 
-- `src/index.ts`: the Worker. `OAuthProvider` wraps everything: `/mcp` → `src/mcp.ts`; the rest → the router (`/`, `/add`, `/authorize`, `/callback`, `/login`, `/logout`, `/pair*`, `/arm`, `/arm/revoke`). No static assets: the worker serves `/` so it can show its own connector link.
+- `src/index.ts`: the Worker. `OAuthProvider` wraps everything: `/mcp` → `src/mcp.ts`; the rest → the router (`/`, `/add`, `/favicon.svg`, `/authorize`, `/callback`, `/login`, `/logout`, `/pair*`, `/arm`, `/arm/revoke`). No static assets: the worker serves `/` so it can show its own connector link.
 - `src/auth.ts`: GitHub sign-in (PKCE), the hub's web session cookie, the MCP consent page. One `/callback` serves both flows: web-login states start with `w.`, the rest go through the library's `finishUpstream()`.
 - `src/pair.ts`: device-code pairing. `src/hub.ts`: `UserHub`, one SQLite Durable Object per user (arms, activity, hibernatable arm sockets, RPC `listTools`/`callTool`/`revokeArm`/`armSummary`). `src/tools.ts`: pure naming/routing/error wording, the place to change what models read. `src/kinds.ts`: the one deliberate exception to arm-agnostic: known kinds' tools before one is paired and how pages name them. `src/guide.ts`: the people pages (`/`, `/add`, the step after pairing); re-check Claude's and ChatGPT's connector menus when touching them.
 - `tools/fake-arm.mjs` (zero-dependency arm) and `tools/mcp-check.mjs` (scripted MCP client with real OAuth).

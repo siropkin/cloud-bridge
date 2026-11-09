@@ -68,7 +68,7 @@ describe('ago', () => {
 });
 
 describe('known kinds before any arm is paired', () => {
-  const known = { chrome: { label: 'Chrome profile', codeWhere: 'x', tools: [T('chrome')], notConnected: 'Install it, then connect.' } };
+  const known = { chrome: { label: 'Chrome profile', connectWhere: 'x', codeWhere: 'x', tools: [T('chrome')], notConnected: 'Install it, then connect.' } };
   it('lists the kind\'s tools only while none of that kind is paired', () => {
     expect(buildToolList([], known).map((t) => t.name)).toEqual(['chrome']);
     expect(buildToolList([arm({ tools: [T('chrome'), T('snap')] })], known).map((t) => t.name)).toEqual(['chrome', 'chrome_snap']);

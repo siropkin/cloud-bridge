@@ -5,7 +5,7 @@ import { armTokenUser, ARM_PROTOCOL, refuse } from './hub';
 import { addPage, homePage } from './guide';
 import { mcpHandler } from './mcp';
 import { pairApprove, pairPage, pairPoll, pairStart } from './pair';
-import { escapeHtml, json, page } from './util';
+import { escapeHtml, favicon, json, page } from './util';
 
 export { UserHub } from './hub';
 
@@ -41,6 +41,7 @@ async function route(request: Request, env: HubEnv): Promise<Response> {
   const m = request.method;
   if (pathname === '/' && m === 'GET') return homePage(request);
   if (pathname === '/add' && m === 'GET') return addPage(request);
+  if ((pathname === '/favicon.svg' || pathname === '/favicon.ico') && m === 'GET') return favicon();
   if (pathname === '/authorize' && (m === 'GET' || m === 'POST')) return authorize(request, env);
   if (pathname === '/callback' && m === 'GET') return callback(request, env);
   if (pathname === '/login' && m === 'GET') return login(request, env);

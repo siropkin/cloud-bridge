@@ -15,7 +15,7 @@ Status: preview. The hosted hub is **https://cloud-bridge.ivan-seredkin.workers.
 - **Known kinds** (`src/kinds.ts`, today only `chrome`): their tools are listed even before one is paired, answering with how to connect one. AI apps cache the tool list when the connector is added, so a Chrome paired later then needs no refresh. A paired arm's own tools replace them. The same file holds how pages name a kind ("Chrome profile “poplar”").
 - **Arms** pair with a device code and then hold one outbound WebSocket to `/arm`:
   1. `POST /pair/start {"kind","name"}` → `{code, pollToken, verificationUri}`.
-  2. You open `verificationUri`, sign in and click Connect.
+  2. You open `verificationUri`, sign in and click Connect. The page leads with the decision ("Did you just click Connect in …?"); the code is the cross-check, and arms should show it where people can see it with the page open (chrome-bridge badges its toolbar icon with the first 4 characters).
   3. `POST /pair/poll {code, pollToken}` → `{armToken, armUrl}` (once).
   4. Connect to `armUrl` with subprotocols `cloud-bridge.v1` and `cbtoken.<armToken>`. A bad or revoked token is closed with code `4401`.
   - Signing out: `POST /arm/revoke` with `Authorization: Bearer <armToken>` → `{ok, revoked}`; the record and its socket go (`4401`). chrome-bridge calls it when Cloud AI apps is switched off and for its previous token when it pairs again, retrying while the hub is unreachable; the fake arm with `--revoke`. Pairing never replaces another record by name: two Chrome profiles can share one.

@@ -7,7 +7,8 @@ import type { ArmTool } from './tools';
 export interface KnownKind {
   // People's words: "Chrome profile “poplar”".
   label: string;
-  // Where the arm shows its pairing code.
+  // Where the person clicked Connect, and where the arm shows its pairing code.
+  connectWhere: string;
   codeWhere: string;
   // Listed while no arm of this kind is paired; a paired arm's own tools replace them.
   tools: ArmTool[];
@@ -20,7 +21,9 @@ export const CHROME_STORE = 'https://chromewebstore.google.com/detail/chrome-bri
 export const KNOWN_KINDS: Record<string, KnownKind> = {
   chrome: {
     label: 'Chrome profile',
-    codeWhere: 'the chrome-bridge popup: click the chrome-bridge icon in your Chrome toolbar',
+    connectWhere: 'the chrome-bridge extension',
+    // The extension badges its toolbar icon with the code's first 4 characters (the popup closes when this page opens).
+    codeWhere: 'The chrome-bridge icon in your Chrome toolbar',
     tools: [
       {
         name: 'chrome',
@@ -53,6 +56,10 @@ export function kindName(kind: string): string {
   return kind === 'chrome' ? 'Chrome' : capitalized(kind);
 }
 
+export function connectWhere(kind: string): string {
+  return KNOWN_KINDS[kind]?.connectWhere ?? 'the app that sent you here';
+}
+
 export function codeWhere(kind: string): string {
-  return KNOWN_KINDS[kind]?.codeWhere ?? 'the app that showed you this code';
+  return KNOWN_KINDS[kind]?.codeWhere ?? 'The app that sent you here';
 }

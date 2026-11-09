@@ -1,7 +1,7 @@
 import { requireSession, type HubEnv } from './auth';
 import { validArm } from './hub';
 import { addSteps, COPY_SCRIPT } from './guide';
-import { armLabel, codeWhere } from './kinds';
+import { armLabel, codeWhere, connectWhere } from './kinds';
 import { escapeHtml, json, page, randomToken, sha256, sign, verify } from './util';
 
 // Device-code pairing, any arm kind:
@@ -79,8 +79,8 @@ export async function pairPage(request: Request, env: HubEnv): Promise<Response>
   const csrf = await csrfFor(session.uid, code, env.COOKIE_ENCRYPTION_KEY);
   return page(
     `Connect ${armLabel(record.kind, record.name)}?`,
-    `<p>Check this code matches the one in ${escapeHtml(codeWhere(record.kind))}:</p>
-<p><code style="font-size:1.4rem">${escapeHtml(code)}</code></p>
+    `<p>Did you just click <strong>Connect</strong> in ${escapeHtml(connectWhere(record.kind))}? Then click Connect below. If you didn't, click Deny: someone else may be trying to link their browser to your account.</p>
+<p class="note">Code <code>${escapeHtml(code)}</code>. ${escapeHtml(codeWhere(record.kind))} shows the same code while it waits.</p>
 <p>Once connected, Claude, ChatGPT and other AI apps you allow can use it as <strong>@${escapeHtml(session.login)}</strong>.</p>
 <form method="post" action="/pair/approve"><input type="hidden" name="code" value="${escapeHtml(code)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
 <p><button name="decision" value="approve">Connect</button> <button class="secondary" name="decision" value="deny">Deny</button></p></form>`,
@@ -110,10 +110,10 @@ export async function pairApprove(request: Request, env: HubEnv): Promise<Respon
   await env.OAUTH_KV.put(key(code), JSON.stringify({ ...record, status: 'approved', armToken: token }), { expirationTtl: ttl });
   // Not a dead end: the next step is adding Cloud Bridge to an AI app.
   return page(
-    'Now add Cloud Bridge to your AI app',
-    `<p>✓ ${escapeHtml(armLabel(record.kind, record.name))} is connected.</p>
-${addSteps(request.url)}
-<p class="note">Already added Cloud Bridge to Claude or ChatGPT? You're done: close this tab.</p>`,
-    { script: COPY_SCRIPT },
+    `${armLabel(record.kind, record.name)} is connected`,
+    `<p><strong>Already added Cloud Bridge to Claude or ChatGPT? You're done: you can close this tab.</strong></p>
+<h2>Next: add Cloud Bridge to your AI app</h2>
+${addSteps(request.url)}`,
+    { script: COPY_SCRIPT, icon: '✅' },
   );
 }
