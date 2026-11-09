@@ -6,7 +6,7 @@ A free Cloudflare hub that lets cloud AIs (Claude.ai, ChatGPT, any remote-MCP cl
  AI clients ──MCP + OAuth──▶  Cloud Bridge (one Worker, one Durable Object per user)  ◀──WebSocket── arms
 ```
 
-Status: B1, the hub skeleton. It runs locally with a fake arm; it isn't deployed yet and Chrome doesn't speak the protocol yet.
+Status: preview. The hosted hub is **https://cloud-bridge.ivan-seredkin.workers.dev** (add `/mcp` as a custom connector in your AI app). Chrome joins from the chrome-bridge popup: ⚙ Settings → Cloud AI apps.
 
 ## How it works
 
@@ -33,9 +33,27 @@ npm run fake-arm -- --name birch # prints a pairing link; open it and click Conn
 node tools/mcp-check.mjs --call fake_echo '{"text":"hi"}'   # OAuth in the browser, then tools/list + tools/call
 ```
 
-`tools/mcp-check.mjs` is a scripted MCP client (what the MCP Inspector checks, without its UI). `npx @modelcontextprotocol/inspector` works too: point it at `http://localhost:8787/mcp`.
+`npm run dev` serves MCP at `http://localhost:8787/mcp` (it overrides `MCP_RESOURCE`, which wrangler.jsonc sets to the deployed URL; `.dev.vars` can't, because with `secrets` declared wrangler dev loads only those keys from it).
+
+`tools/mcp-check.mjs` is a scripted MCP client (what the MCP Inspector checks, without its UI). `npx @modelcontextprotocol/inspector` works too: point it at `http://localhost:8787/mcp`. Both tools take `--hub <url>` to test a deployed hub.
 
 Tests: `npm test` (vitest in the Workers runtime, fake secrets, no network), `npm run type-check`.
+
+## Deploy your own
+
+Free on Workers Free + `*.workers.dev`. The worker needs a KV namespace, three secrets and its public URL:
+
+1. `npx wrangler kv namespace create OAUTH_KV`, then put the id in `wrangler.jsonc`.
+2. Set `MCP_RESOURCE` in `wrangler.jsonc` to `https://cloud-bridge.<your-subdomain>.workers.dev/mcp`.
+3. A GitHub OAuth App with the callback `https://cloud-bridge.<your-subdomain>.workers.dev/callback` (no scopes are requested: sign-in reads the public profile).
+4. Run this as ONE command (pasted separately, a second line would be read as the secret). It asks for the client secret without echoing it, writes the secrets to a private file outside the repo, deploys with them (a Worker that doesn't exist yet can't take `wrangler secret put`, and the deploy refuses without them), and deletes the file on exit, even if the deploy fails:
+
+   ```sh
+   bash -c 'set -e; f=~/.cloud-bridge/prod-secrets.env; mkdir -p ~/.cloud-bridge; umask 077; trap "rm -f $f" EXIT; read -rsp "GitHub client secret: " S; echo; printf "GITHUB_CLIENT_ID=%s\nGITHUB_CLIENT_SECRET=%s\nCOOKIE_ENCRYPTION_KEY=%s\n" "<client id>" "$S" "$(openssl rand -hex 32)" > "$f"; npx wrangler deploy --secrets-file "$f"'
+   ```
+
+   Later deploys are plain `npx wrangler deploy` (secrets persist); rotate one with `npx wrangler secret put NAME`.
+5. A new `workers.dev` hostname answers `error code: 1042` ("There is nothing here yet") until it propagates: about 30 minutes for this hub's first deploy.
 
 ## License
 

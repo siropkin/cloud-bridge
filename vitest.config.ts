@@ -12,6 +12,7 @@ export default defineConfig({
           GITHUB_CLIENT_SECRET: 'test-client-secret',
           COOKIE_ENCRYPTION_KEY: 'test-cookie-key-0123456789abcdef0123456789abcdef',
           ARM_CALL_TIMEOUT_MS: '500',
+          MCP_RESOURCE: 'http://localhost:8787/mcp',
         },
       },
     }),

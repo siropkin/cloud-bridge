@@ -8,13 +8,14 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "vars": {
     // The URL MCP clients connect to; every access token is bound to it.
-    // B2 sets the deployed https://cloud-bridge.<sub>.workers.dev/mcp before the first deploy.
-    "MCP_RESOURCE": "http://localhost:8787/mcp",
+    // `npm run dev` overrides it with http://localhost:8787/mcp (.dev.vars can't:
+    // with `secrets` declared, wrangler dev loads only those keys from it).
+    "MCP_RESOURCE": "https://cloud-bridge.ivan-seredkin.workers.dev/mcp",
     // How long a tools/call waits for the arm's answer.
     "ARM_CALL_TIMEOUT_MS": "120000"
   },
-  // No id yet: wrangler dev simulates it locally. B2 creates the real namespace (approval).
-  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  // wrangler dev simulates it locally; deploys use this namespace.
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "17fe14e95ad64871bd2417c565d2dcff" }],
   "durable_objects": {
     "bindings": [{ "name": "USER_HUB", "class_name": "UserHub" }]
   },
