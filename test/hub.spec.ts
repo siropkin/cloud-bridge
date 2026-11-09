@@ -394,3 +394,39 @@ describe('pages people read', () => {
     expect(btoa(String.fromCharCode(...new Uint8Array(digest)))).toBe(COPY_SCRIPT.hash);
   });
 });
+
+describe('heartbeats', () => {
+  it('a socket that stopped pinging counts as offline and is closed, instead of a call waiting out the timeout', async () => {
+    const user = newUser();
+    const cookie = await cookieFor(user);
+    const { token } = await pairArm(cookie, 'fake', 'birch');
+    const arm = await connectArm(token, { name: 'birch', tools: [ECHO], onCall: () => undefined, offlineHint: 'Ask the user to run the fake arm' });
+    await arm.ready;
+    const stub = env.USER_HUB.get(env.USER_HUB.idFromName(user.uid));
+    // Opened 10 minutes ago, never pinged since: dead without a close frame.
+    await runInDurableObject(stub, (_: UserHub, state) => {
+      const ws = state.getWebSockets()[0];
+      ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), since: Date.now() - 10 * 60_000 });
+    });
+    const started = Date.now();
+    const res = await stub.callTool('fake_echo', { text: 'x' });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(res.content[0].text).toMatch(/^No fake is online \(paired: birch, last seen \d+s ago\)\. Ask the user to run the fake arm, then call this tool again\.$/);
+    expect((await arm.closed).code).toBe(4003);
+  });
+  it('a pinging socket stays online', async () => {
+    const user = newUser();
+    const { token } = await pairArm(await cookieFor(user), 'fake', 'birch');
+    const arm = await connectArm(token, { name: 'birch', tools: [ECHO], onCall: () => ({ content: [{ type: 'text', text: 'ok' }] }) });
+    await arm.ready;
+    const stub = env.USER_HUB.get(env.USER_HUB.idFromName(user.uid));
+    await runInDurableObject(stub, (_: UserHub, state) => {
+      const ws = state.getWebSockets()[0];
+      ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), since: Date.now() - 10 * 60_000 });
+    });
+    arm.ws.send('ping');
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await stub.callTool('fake_echo', { text: 'x' })).content[0].text).toBe('ok');
+    arm.ws.close();
+  });
+});

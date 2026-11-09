@@ -10,7 +10,13 @@ interface Attachment {
   // One per socket: a replaced connection's late close must not fail calls on its successor.
   connId: string;
   ready: boolean; // hello received and tools listed
+  since?: number; // when the socket opened (absent on sockets from before it existed)
 }
+
+// Arms send "ping" every 20s (answered by the runtime, never waking the object).
+// A socket with no ping for this long is dead without having closed: calls on it
+// waited the full 120s timeout (found live with ChatGPT, 2026-11-09).
+export const HEARTBEAT_STALE_MS = 75_000;
 
 interface Pending {
   connId: string;
@@ -152,7 +158,7 @@ export class UserHub extends DurableObject<Env> {
     for (const old of this.ctx.getWebSockets(row.id)) old.close(4000, 'replaced by a newer connection of the same arm');
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, [row.id]);
-    server.serializeAttachment({ armId: row.id, connId: crypto.randomUUID(), ready: false } satisfies Attachment);
+    server.serializeAttachment({ armId: row.id, connId: crypto.randomUUID(), ready: false, since: Date.now() } satisfies Attachment);
     this.sql.exec('UPDATE arms SET last_seen = ? WHERE id = ?', Date.now(), row.id);
     const headers = new Headers();
     if (request.headers.get('Sec-WebSocket-Protocol')) headers.set('Sec-WebSocket-Protocol', ARM_PROTOCOL);
@@ -251,11 +257,27 @@ export class UserHub extends DurableObject<Env> {
     });
   }
 
+  // Open, ready and still pinging. A silent socket is closed here, so the arm's
+  // own reconnect takes over and AI apps see it offline instead of hanging.
+  private live(ws: WebSocket, now = Date.now()): Attachment | null {
+    const att = ws.deserializeAttachment() as Attachment | null;
+    if (!att?.ready || ws.readyState !== WebSocket.OPEN) return null;
+    const heard = Math.max(this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0, att.since ?? 0);
+    if (now - heard <= HEARTBEAT_STALE_MS) return att;
+    this.gone(ws, 'stopped sending heartbeats');
+    try {
+      ws.close(4003, 'no heartbeat: reconnect');
+    } catch {
+      // already closed
+    }
+    return null;
+  }
+
   private arms(): ArmInfo[] {
     const online = new Set<string>();
     for (const ws of this.ctx.getWebSockets()) {
-      const att = ws.deserializeAttachment() as Attachment | null;
-      if (att?.ready && ws.readyState === WebSocket.OPEN) online.add(att.armId);
+      const att = this.live(ws);
+      if (att) online.add(att.armId);
     }
     return this.sql.exec<ArmRow>('SELECT * FROM arms ORDER BY created_at').toArray().map((r) => ({
       id: r.id,
@@ -281,7 +303,7 @@ export class UserHub extends DurableObject<Env> {
       return { content: [{ type: 'text', text: resolved.error }], isError: true };
     }
     const { arm, tool } = resolved;
-    const ws = this.ctx.getWebSockets(arm.id).find((s) => (s.deserializeAttachment() as Attachment | null)?.ready && s.readyState === WebSocket.OPEN);
+    const ws = this.ctx.getWebSockets(arm.id).find((s) => this.live(s));
     if (!ws) return { content: [{ type: 'text', text: `The ${arm.kind} "${arm.name}" just went offline. Call this tool again in a few seconds.` }], isError: true };
     try {
       const result = await this.request(ws, (ws.deserializeAttachment() as Attachment).connId, 'tools/call', { name: tool, arguments: resolved.args, _meta: { client: meta.client, session: meta.session } });
