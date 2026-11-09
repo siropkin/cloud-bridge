@@ -6,17 +6,19 @@ A free Cloudflare hub that lets cloud AIs (Claude.ai, ChatGPT, any remote-MCP cl
  AI clients ──MCP + OAuth──▶  Cloud Bridge (one Worker, one Durable Object per user)  ◀──WebSocket── arms
 ```
 
-Status: preview. The hosted hub is **https://cloud-bridge.ivan-seredkin.workers.dev** (add `/mcp` as a custom connector in your AI app). Chrome joins from the chrome-bridge popup: ⚙ Settings → Cloud AI apps.
+Status: preview. The hosted hub is **https://cloud-bridge.ivan-seredkin.workers.dev**: its home page is a three-step guide (install chrome-bridge, connect Chrome from its popup → ⚙ Settings → Cloud AI apps, add the connector to Claude or ChatGPT). `/add?app=claude|chatgpt` is that last step alone; the popup's Add to Claude / Add to ChatGPT buttons open it.
 
 ## How it works
 
 - **Sign-in**: GitHub. AI clients get OAuth 2.1 + PKCE from [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider) (dynamic registration and CIMD); a consent page names the client and where access is sent.
 - **`/mcp`**: stateless Streamable HTTP (MCP SDK v2 through `agents`' `createMcpHandler`). `tools/list` merges the tools of your paired arms, prefixed with the arm kind (`echo` on a `fake` arm → `fake_echo`). With several arms of a kind, tools gain a selector argument (`arm`; chrome uses `profile`).
+- **Known kinds** (`src/kinds.ts`, today only `chrome`): their tools are listed even before one is paired, answering with how to connect one. AI apps cache the tool list when the connector is added, so a Chrome paired later then needs no refresh. A paired arm's own tools replace them. The same file holds how pages name a kind ("Chrome profile “poplar”").
 - **Arms** pair with a device code and then hold one outbound WebSocket to `/arm`:
   1. `POST /pair/start {"kind","name"}` → `{code, pollToken, verificationUri}`.
   2. You open `verificationUri`, sign in and click Connect.
   3. `POST /pair/poll {code, pollToken}` → `{armToken, armUrl}` (once).
   4. Connect to `armUrl` with subprotocols `cloud-bridge.v1` and `cbtoken.<armToken>`. A bad or revoked token is closed with code `4401`.
+  - Signing out: `POST /arm/revoke` with `Authorization: Bearer <armToken>` → `{ok, revoked}`; the record and its socket go (`4401`). chrome-bridge calls it when Cloud AI apps is switched off and for its previous token when it pairs again, retrying while the hub is unreachable; the fake arm with `--revoke`. Pairing never replaces another record by name: two Chrome profiles can share one.
 - **Arm protocol** (JSON-RPC 2.0 text frames): the arm sends `arm/hello {kind, name, version, selector?, offlineHint?}`; the hub answers `arm/policy`, then asks `tools/list`; MCP calls become `tools/call {name, arguments, _meta}`. Heartbeat: the text frame `ping`, answered `pong` without waking the Durable Object.
 - **Errors are written for the model** and name the next step: no arm online, which arm to pick, an arm that dropped mid-call.
 - **Activity**: per call, metadata only (time, client, arm, tool name, ok, ms, and the hub's own error message; an arm's error text is never stored, since it can echo arguments); 30 days or 5,000 rows.

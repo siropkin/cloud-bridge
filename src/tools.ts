@@ -1,6 +1,7 @@
 // Pure routing between hub tool names and arms. The hub never parses an arm's
 // commands: arms describe their tools, and this file only namespaces them,
 // picks the arm a call goes to, and words the errors for the model.
+import { KNOWN_KINDS, type KnownKind } from './kinds';
 
 export interface ArmTool {
   name: string;
@@ -47,10 +48,17 @@ function byKind(arms: ArmInfo[]): Map<string, ArmInfo[]> {
 }
 
 // Tools of every PAIRED arm, online or not: a client that cached tools/list
-// still gets a useful "start your arm" answer instead of "unknown tool".
-export function buildToolList(arms: ArmInfo[]): HubTool[] {
+// still gets a useful "start your arm" answer instead of "unknown tool". Known
+// kinds with nothing paired yet list their tools too, so the list a client
+// caches when the connector is added already has them.
+export function buildToolList(arms: ArmInfo[], known: Record<string, KnownKind> = KNOWN_KINDS): HubTool[] {
   const out: HubTool[] = [];
-  for (const [kind, group] of byKind(arms)) {
+  const kinds = byKind(arms);
+  for (const [kind, k] of Object.entries(known)) {
+    if (kinds.has(kind)) continue;
+    for (const tool of k.tools) out.push({ ...tool, name: hubToolName(kind, tool.name), inputSchema: { type: 'object' as const, ...(tool.inputSchema ?? {}) } });
+  }
+  for (const [kind, group] of kinds) {
     const seen = new Set<string>();
     const selector = group[0].selector;
     for (const arm of group) {
@@ -93,8 +101,12 @@ function startHint(kind: string, arm: ArmInfo | undefined): string {
   return arm?.offlineHint ?? `Ask the user to start their ${kind} arm`;
 }
 
-export function resolveCall(arms: ArmInfo[], hubName: string, args: Record<string, unknown>, now = Date.now()): Resolved {
-  for (const [kind, group] of byKind(arms)) {
+export function resolveCall(arms: ArmInfo[], hubName: string, args: Record<string, unknown>, now = Date.now(), known: Record<string, KnownKind> = KNOWN_KINDS): Resolved {
+  const kinds = byKind(arms);
+  for (const [kind, k] of Object.entries(known)) {
+    if (!kinds.has(kind) && k.tools.some((t) => hubToolName(kind, t.name) === hubName)) return { ok: false, error: k.notConnected };
+  }
+  for (const [kind, group] of kinds) {
     const match = group.flatMap((arm) => arm.tools.filter((t) => hubToolName(kind, t.name) === hubName).map((t) => ({ arm, tool: t.name })));
     if (!match.length) continue;
     const selector = group[0].selector;

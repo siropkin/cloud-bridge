@@ -3,6 +3,7 @@
 // tools (echo, fake_snap) over the same protocol the chrome-bridge extension speaks.
 //
 //   node tools/fake-arm.mjs [--hub http://localhost:8787] [--name birch] [--once]
+//   node tools/fake-arm.mjs --name birch --revoke   (sign this arm out: the hub forgets it)
 //
 // The first run prints a pairing link; approve it in a browser. The arm token is
 // saved to ~/.cloud-bridge/fake-arm-<name>.json (delete it to pair again).
@@ -84,7 +85,23 @@ async function credentials() {
   return pair();
 }
 
+// Signs out the way the extension does when Cloud AI apps is switched off.
+async function revoke() {
+  let saved;
+  try {
+    saved = JSON.parse(await readFile(FILE, 'utf8'));
+  } catch {
+    return log(`not paired (no ${FILE}): nothing to revoke`);
+  }
+  const res = await fetch(saved.hub + '/arm/revoke', { method: 'POST', headers: { Authorization: `Bearer ${saved.armToken}` } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`revoke: ${res.status} ${body.message ?? ''}`);
+  await rm(FILE, { force: true });
+  log(body.revoked ? `signed out of ${saved.hub}` : `${saved.hub} had already forgotten this arm`);
+}
+
 async function run() {
+  if (args.includes('--revoke')) return revoke();
   const { armToken, armUrl } = await credentials();
   let backoff = 1000;
   for (;;) {

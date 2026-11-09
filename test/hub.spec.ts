@@ -3,7 +3,8 @@ import { runInDurableObject } from 'cloudflare:test';
 import { safeNext } from '../src/auth';
 import type { UserHub } from '../src/hub';
 import { describe, expect, it } from 'vitest';
-import { accessToken, connectArm, cookieFor, ECHO, hub, mcpClient, newUser, pairArm, SNAP } from './helpers';
+import { COPY_SCRIPT } from '../src/guide';
+import { accessToken, connectArm, cookieFor, ECHO, hub, mcpClient, newUser, ORIGIN, pairArm, SNAP } from './helpers';
 
 const text = (r: any) => r.content.map((c: any) => c.text).join('\n');
 
@@ -67,7 +68,7 @@ describe('auth surface', () => {
     const reg = (await (await hub('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ redirect_uris: ['http://127.0.0.1:9999/cb'], client_name: 'CSP check', token_endpoint_auth_method: 'none' }) })).json()) as any;
     const q = new URLSearchParams({ response_type: 'code', client_id: reg.client_id, redirect_uri: 'http://127.0.0.1:9999/cb', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', resource: env.MCP_RESOURCE });
     const consent = await hub(`/authorize?${q}`, { headers: { Cookie: cookie } });
-    expect(await consent.text()).toContain('Allow CSP check to use your arms?');
+    expect(await consent.text()).toContain('Allow CSP check to use your Chrome?');
     // Chrome applies form-action to the redirect after the submit: 'self' blocked the
     // 302 to the client's redirect_uri (found live with a scripted MCP client).
     expect(consent.headers.get('Content-Security-Policy')).not.toContain('form-action');
@@ -178,7 +179,7 @@ describe('MCP through OAuth to arms', () => {
     await arm.ready;
     const client = await mcpClient(await accessToken(cookie));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(['fake_echo', 'fake_snap']);
+    expect(tools.map((t) => t.name)).toEqual(['chrome', 'chrome_batch', 'fake_echo', 'fake_snap']);
     const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hi' } });
     expect(res.isError).toBeFalsy();
     expect(text(res)).toBe('echo:hi');
@@ -210,7 +211,7 @@ describe('MCP through OAuth to arms', () => {
     const arm = await connectArm(token, { name: 'birch', tools: [ECHO] });
     await arm.ready;
     const client = await mcpClient(await accessToken(await cookieFor(newUser())));
-    expect((await client.listTools()).tools).toEqual([]);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(['chrome', 'chrome_batch']); // the built-in Chrome tools only
     arm.ws.close();
   });
   it('a disconnected arm answers with what to do next', async () => {
@@ -221,7 +222,7 @@ describe('MCP through OAuth to arms', () => {
     arm.ws.close(1000, 'bye');
     await new Promise((r) => setTimeout(r, 50));
     const client = await mcpClient(await accessToken(cookie));
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(['fake_echo']);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(['chrome', 'chrome_batch', 'fake_echo']);
     const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hi' } });
     expect(res.isError).toBe(true);
     expect(text(res)).toMatch(/^No fake is online \(paired: birch, last seen \d+s ago\)\. Ask the user to run the fake arm, then call this tool again\.$/);
@@ -251,11 +252,132 @@ describe('MCP through OAuth to arms', () => {
     };
     const [birch, oak] = [await mk('birch'), await mk('oak')];
     const client = await mcpClient(await accessToken(cookie));
-    const [tool] = (await client.listTools()).tools;
+    const tool = (await client.listTools()).tools.find((t) => t.name === 'fake_echo')!;
     expect(Object.keys(tool.inputSchema.properties ?? {})).toEqual(['text', 'arm']);
     expect(text(await client.callTool({ name: 'fake_echo', arguments: { text: 'x' } }))).toContain('Several fakes are online: birch, oak. Pass arm');
     expect(text(await client.callTool({ name: 'fake_echo', arguments: { text: 'x', arm: 'oak' } }))).toBe('oak');
     birch.ws.close();
     oak.ws.close();
+  });
+});
+
+const pages = async (...paths: string[]) => Promise.all(paths.map(async (p) => (await hub(p)).text()));
+// People never read "arm", "hub" or "MCP" on a page. Exceptions: the connector link
+// (it ends in /mcp) and ChatGPT's own button label, which they must find verbatim.
+const plain = (html: string) =>
+  html.replace(/<script>[\s\S]*?<\/script>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/https?:\/\/\S+/g, ' ').replace('Add custom MCP server', ' ');
+
+describe('signing out (off → on → off leaves at most one record: the arm revokes its old token)', () => {
+  const revoke = (token: string) => hub('/arm/revoke', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  it('revoke drops the record and its socket; a second revoke is still ok', async () => {
+    const user = newUser();
+    const cookie = await cookieFor(user);
+    const { token } = await pairArm(cookie, 'chrome', 'poplar');
+    const arm = await connectArm(token, { kind: 'chrome', name: 'poplar', tools: [ECHO] });
+    await arm.ready;
+    const res = await revoke(token);
+    expect(await res.json()).toEqual({ ok: true, revoked: true });
+    expect(await arm.closed).toEqual({ code: 4401, reason: 'signed out of Cloud Bridge' });
+    expect(await env.USER_HUB.get(env.USER_HUB.idFromName(user.uid)).armSummary()).toEqual([]);
+    expect(await (await revoke(token)).json()).toEqual({ ok: true, revoked: false });
+    // The token no longer opens a socket.
+    expect((await (await connectArm(token, { name: 'poplar' })).closed).code).toBe(4401);
+  });
+  it('a malformed token is refused with the expected shape', async () => {
+    const res = await hub('/arm/revoke', { method: 'POST' });
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as any).message).toContain('Authorization: Bearer cba_');
+  });
+  it('pairing never replaces another record by name: two profiles can share one', async () => {
+    const user = newUser();
+    const cookie = await cookieFor(user);
+    const first = await pairArm(cookie, 'chrome', 'oak');
+    await pairArm(cookie, 'chrome', 'Oak');
+    expect((await env.USER_HUB.get(env.USER_HUB.idFromName(user.uid)).armSummary()).map((a) => a.name)).toEqual(['oak', 'Oak']);
+    const a = await connectArm(first.token, { kind: 'chrome', name: 'oak', tools: [ECHO] });
+    await a.ready; // the first profile's token still works
+    a.ws.close();
+  });
+  it('revoking mid-call fails the call with the check-state hint', async () => {
+    const cookie = await cookieFor(newUser());
+    const { token } = await pairArm(cookie, 'fake', 'birch');
+    const arm = await connectArm(token, { name: 'birch', tools: [ECHO], onCall: () => undefined });
+    await arm.ready;
+    const client = await mcpClient(await accessToken(cookie));
+    const call = client.callTool({ name: 'fake_echo', arguments: { text: 'x' } });
+    await new Promise((r) => setTimeout(r, 30));
+    await revoke(token);
+    expect(text(await call)).toContain('failed on fake_echo: the arm signed out of Cloud Bridge before answering.');
+  });
+});
+
+describe('a connector added before Chrome pairs', () => {
+  it('already lists chrome and chrome_batch, which answer with how to connect Chrome', async () => {
+    const cookie = await cookieFor(newUser());
+    const client = await mcpClient(await accessToken(cookie));
+    const before = (await client.listTools()).tools.map((t) => t.name);
+    expect(before).toEqual(['chrome', 'chrome_batch']);
+    const res = await client.callTool({ name: 'chrome', arguments: { command: 'tabs' } });
+    expect(res.isError).toBe(true);
+    expect(text(res)).toMatch(/^No Chrome is connected to the user's Cloud Bridge yet, so nothing ran\. .*⚙ Settings → Cloud AI apps → Connect\. Once they have, call this tool again\.$/);
+    // Chrome pairs later: same names, now the arm's own tools, and the cached name routes.
+    const { token } = await pairArm(cookie, 'chrome', 'poplar');
+    const arm = await connectArm(token, { kind: 'chrome', name: 'poplar', selector: 'profile', tools: [{ name: 'chrome', description: 'real', inputSchema: { type: 'object', properties: { command: { type: 'string' } } } }, { name: 'chrome_batch', inputSchema: { type: 'object' } }], onCall: (p) => ({ content: [{ type: 'text', text: `ran ${p.arguments.command}` }] }) });
+    await arm.ready;
+    const after = (await client.listTools()).tools;
+    expect(after.map((t) => t.name)).toEqual(before);
+    expect(after[0].description).toBe('real');
+    expect(text(await client.callTool({ name: 'chrome', arguments: { command: 'tabs' } }))).toBe('ran tabs');
+    arm.ws.close();
+  });
+});
+
+describe('pages people read', () => {
+  it('the consent page names the connected profiles and where access goes', async () => {
+    const cookie = await cookieFor(newUser());
+    await pairArm(cookie, 'chrome', 'poplar');
+    const reg = (await (await hub('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'], client_name: 'Claude', token_endpoint_auth_method: 'none' }) })).json()) as any;
+    const q = new URLSearchParams({ response_type: 'code', client_id: reg.client_id, redirect_uri: 'https://claude.ai/api/mcp/auth_callback', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', resource: env.MCP_RESOURCE });
+    const html = await (await hub(`/authorize?${q}`, { headers: { Cookie: cookie } })).text();
+    expect(html).toContain('Allow Claude to use your Chrome?');
+    expect(html).toContain('<strong>Chrome profile “poplar”</strong>');
+    expect(html).toContain("Access goes to <strong>claude.ai</strong>. Continue only if you're adding Cloud Bridge in Claude right now.");
+    expect(html).not.toContain('not verified');
+    expect(plain(html)).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b/i);
+  });
+  it('the pairing page shows the code and says where to compare it; Connect leads to adding the AI app', async () => {
+    const cookie = await cookieFor(newUser());
+    const start = (await (await hub('/pair/start', { method: 'POST', body: JSON.stringify({ kind: 'chrome', name: 'poplar' }) })).json()) as any;
+    const html = await (await hub(`/pair?code=${start.code}`, { headers: { Cookie: cookie } })).text();
+    expect(html).toContain('Connect Chrome profile “poplar”?');
+    expect(html).toContain('Check this code matches the one in the chrome-bridge popup: click the chrome-bridge icon in your Chrome toolbar:');
+    expect(plain(html)).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b/i);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1];
+    const done = await hub('/pair/approve', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code: start.code, csrf, decision: 'approve' }) });
+    const next = await done.text();
+    expect(next).toContain('Now add Cloud Bridge to your AI app');
+    expect(next).toContain('✓ Chrome profile “poplar” is connected.');
+    expect(next).toContain(`<code>${ORIGIN}/mcp</code>`);
+    expect(next).toContain('href="https://claude.ai/customize/connectors"');
+    expect(next).toContain('href="https://chatgpt.com/plugins"');
+    expect(plain(next)).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b/i);
+  });
+  it('/ is a three-step guide and /add puts the chosen app first; both allow only their copy script', async () => {
+    const [home, chatgpt, claude] = await pages('/', '/add?app=chatgpt', '/add');
+    expect(home).toContain('<title>Cloud Bridge</title>'); // not "Cloud Bridge · Cloud Bridge"
+    expect(chatgpt).toContain('<title>Add Cloud Bridge to ChatGPT · Cloud Bridge</title>');
+    expect(home).toContain('Install chrome-bridge');
+    expect(home).toContain('Connect your Chrome');
+    expect(home).toContain('Add Cloud Bridge to your AI app');
+    expect(chatgpt).toContain('Add Cloud Bridge to ChatGPT');
+    expect(chatgpt.indexOf('<h2>ChatGPT')).toBeLessThan(chatgpt.indexOf('<h2>Claude'));
+    expect(claude.indexOf('<h2>Claude')).toBeLessThan(claude.indexOf('<h2>ChatGPT'));
+    for (const html of [home, chatgpt, claude]) expect(plain(html)).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b/i);
+    const csp = (await hub('/')).headers.get('Content-Security-Policy')!;
+    expect(csp).toContain(`script-src 'sha256-${COPY_SCRIPT.hash}'`);
+  });
+  it('the pinned CSP hash is the copy script\'s real hash', async () => {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(COPY_SCRIPT.code));
+    expect(btoa(String.fromCharCode(...new Uint8Array(digest)))).toBe(COPY_SCRIPT.hash);
   });
 });

@@ -107,11 +107,41 @@ export class UserHub extends DurableObject<Env> {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
+  // No replacing by name: chrome-bridge profile names come from 20 words, so two
+  // profiles can share one (review). An arm that re-pairs revokes its old token
+  // itself (POST /arm/revoke), retrying until the hub answers.
   async createArm(userId: string, kind: string, name: string): Promise<{ armId: string; token: string }> {
     const armId = crypto.randomUUID();
     const token = `cba_${b64url(new TextEncoder().encode(userId))}.${randomToken(32)}`;
     this.sql.exec('INSERT INTO arms(id, kind, name, token_hash, created_at) VALUES (?, ?, ?, ?, ?)', armId, kind, name.trim(), await sha256(token), Date.now());
     return { armId, token };
+  }
+
+  // The arm signs itself out (Cloud AI apps switched off, extension removed):
+  // its record goes, so AI apps stop seeing it. Idempotent.
+  async revokeArm(token: string): Promise<boolean> {
+    const row = this.sql.exec<{ id: string }>('SELECT id FROM arms WHERE token_hash = ?', await sha256(token)).toArray()[0];
+    if (!row) return false;
+    this.dropArm(row.id, 'signed out of Cloud Bridge');
+    return true;
+  }
+
+  private dropArm(id: string, why: string): void {
+    this.sql.exec('DELETE FROM arms WHERE id = ?', id);
+    for (const ws of this.ctx.getWebSockets(id)) {
+      // A server-side close fires no webSocketClose here: fail its calls now.
+      this.gone(ws, why);
+      try {
+        ws.close(UNPAIRED, why);
+      } catch {
+        // already closed
+      }
+    }
+  }
+
+  // For people's pages (the consent page names what an app gets): no tokens, no tools.
+  async armSummary(): Promise<{ kind: string; name: string; online: boolean }[]> {
+    return this.arms().map(({ kind, name, online }) => ({ kind, name, online }));
   }
 
   // The /arm WebSocket upgrade, forwarded by the worker with the token in x-arm-token.

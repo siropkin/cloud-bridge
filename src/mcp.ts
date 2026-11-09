@@ -4,9 +4,11 @@ import { createMcpHandler, getMcpAuthContext } from 'agents/mcp/server';
 import type { Props } from './auth';
 import pkg from '../package.json';
 
-const INSTRUCTIONS = `Cloud Bridge connects you to the user's own machines ("arms"), for example their real, logged-in Chrome.
-Tools are named after the arm kind (chrome_…). When a tool answers that no arm is online, tell the user exactly what it says to do, then retry.
-When several arms of a kind are online, pass the selector argument the tool describes (chrome: profile).`;
+// Descriptive, not orders: Claude read the earlier imperative wording ("tell the
+// user exactly…") as a possible prompt injection and paused.
+const INSTRUCTIONS = `Cloud Bridge connects this conversation to the user's own Chrome (through the chrome-bridge extension): their real tabs, signed in to their accounts.
+The chrome and chrome_batch tools take chrome-bridge command lines. When no Chrome is connected or online, the tool's answer says what the user can do about it, which is useful to pass on.
+When the user has connected several Chrome profiles, the tools take a profile argument that names one.`;
 
 function hubFor(userId: string) {
   return env.USER_HUB.get(env.USER_HUB.idFromName(userId));

@@ -66,3 +66,16 @@ describe('ago', () => {
     expect(ago(1, 1 + 3 * 86400_000)).toBe('last seen 3 days ago');
   });
 });
+
+describe('known kinds before any arm is paired', () => {
+  const known = { chrome: { label: 'Chrome profile', codeWhere: 'x', tools: [T('chrome')], notConnected: 'Install it, then connect.' } };
+  it('lists the kind\'s tools only while none of that kind is paired', () => {
+    expect(buildToolList([], known).map((t) => t.name)).toEqual(['chrome']);
+    expect(buildToolList([arm({ tools: [T('chrome'), T('snap')] })], known).map((t) => t.name)).toEqual(['chrome', 'chrome_snap']);
+    expect(buildToolList([arm({ kind: 'fake', tools: [T('echo')] })], known).map((t) => t.name)).toEqual(['chrome', 'fake_echo']);
+  });
+  it('answers a call with how to connect one', () => {
+    expect(resolveCall([], 'chrome', {}, 0, known)).toEqual({ ok: false, error: 'Install it, then connect.' });
+    expect(resolveCall([arm({ online: false })], 'chrome', {}, 0, known)).toMatchObject({ ok: false, error: expect.stringContaining('No chrome is online') });
+  });
+});

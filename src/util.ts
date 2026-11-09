@@ -64,19 +64,24 @@ const CSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'non
 // formRedirects: the form's answer redirects off-site (OAuth consent → the client's
 // redirect_uri or GitHub). Chrome applies form-action to those redirects too, so
 // such pages can't pin form-action to 'self'.
-export function page(title: string, body: string, init: { status?: number; headers?: Headers; formRedirects?: boolean } = {}): Response {
+// script: one inline script, allowed by its CSP hash (base64 SHA-256, pinned by a test) and nothing else.
+export function page(title: string, body: string, init: { status?: number; headers?: Headers; formRedirects?: boolean; script?: { code: string; hash: string } } = {}): Response {
   const headers = init.headers ?? new Headers();
   headers.set('Content-Type', 'text/html; charset=utf-8');
-  headers.set('Content-Security-Policy', init.formRedirects ? CSP : `${CSP}; form-action 'self'`);
+  const scriptSrc = init.script ? `; script-src 'sha256-${init.script.hash}'` : '';
+  headers.set('Content-Security-Policy', (init.formRedirects ? CSP : `${CSP}; form-action 'self'`) + scriptSrc);
   headers.set('X-Frame-Options', 'DENY');
   headers.set('Cache-Control', 'no-store');
   const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)} · Cloud Bridge</title>
+<title>${escapeHtml(title === 'Cloud Bridge' ? title : `${title} · Cloud Bridge`)}</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem;color:#222}h1{font-size:1.4rem}
 button{font:inherit;padding:.5rem 1.1rem;border-radius:.4rem;border:1px solid #7c3aed;background:#7c3aed;color:#fff;cursor:pointer}
 button.secondary{background:#fff;color:#7c3aed}.note{color:#666;font-size:.9rem}code{background:#f3f0ff;padding:.1rem .3rem;border-radius:.2rem}
-@media(prefers-color-scheme:dark){body{background:#16131f;color:#eee}button.secondary{background:#16131f}code{background:#2a2340}.note{color:#aaa}}</style>
-<h1>🟣 ${escapeHtml(title)}</h1>${body}</html>`;
+a.button{display:inline-block;text-decoration:none;font-weight:600;padding:.45rem 1rem;border-radius:.4rem;border:1px solid #7c3aed;color:#7c3aed}
+.link{display:flex;gap:.5rem;align-items:center;margin:.5rem 0}.link code{user-select:all;word-break:break-all}
+section{border:1px solid #ddd6fe;border-radius:.6rem;padding:.2rem 1rem 1rem;margin:1rem 0}ol{padding-left:1.3rem}li{margin:.25rem 0}
+@media(prefers-color-scheme:dark){body{background:#16131f;color:#eee}button.secondary{background:#16131f}code{background:#2a2340}.note{color:#aaa}a.button{color:#c4b5fd;border-color:#a78bfa}section{border-color:#3b2f5c}}</style>
+<h1>🟣 ${escapeHtml(title)}</h1>${body}${init.script ? `<script>${init.script.code}</script>` : ''}</html>`;
   return new Response(html, { status: init.status ?? 200, headers });
 }
 

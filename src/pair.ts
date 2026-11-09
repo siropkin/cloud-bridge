@@ -1,5 +1,7 @@
 import { requireSession, type HubEnv } from './auth';
 import { validArm } from './hub';
+import { addSteps, COPY_SCRIPT } from './guide';
+import { armLabel, codeWhere } from './kinds';
 import { escapeHtml, json, page, randomToken, sha256, sign, verify } from './util';
 
 // Device-code pairing, any arm kind:
@@ -29,9 +31,6 @@ function normCode(code: unknown): string {
 }
 
 const key = (code: string) => `pair:${code}`;
-
-// The arm kind as people read it: "chrome" → "Chrome".
-const kindName = (kind: string) => kind.charAt(0).toUpperCase() + kind.slice(1);
 
 async function body(request: Request): Promise<Record<string, unknown>> {
   try {
@@ -76,18 +75,20 @@ export async function pairPage(request: Request, env: HubEnv): Promise<Response>
   if (session instanceof Response) return session;
   const code = normCode(new URL(request.url).searchParams.get('code'));
   const record = await env.OAUTH_KV.get<PairRecord>(key(code), 'json');
-  if (!record || record.status !== 'pending') {
-    return page('Pairing code expired', '<p>This code expired or was already used. Start pairing again from the arm (for Chrome: the extension popup).</p>', { status: 404 });
-  }
+  if (!record || record.status !== 'pending') return expired();
   const csrf = await csrfFor(session.uid, code, env.COOKIE_ENCRYPTION_KEY);
   return page(
-    `Connect ${kindName(record.kind)} “${record.name}”?`,
-    `<p>Code <code>${escapeHtml(code)}</code>. Check it matches the one the arm shows.</p>
-<p>Once connected, AI apps you allow in Cloud Bridge can use this ${escapeHtml(kindName(record.kind))} as <strong>@${escapeHtml(session.login)}</strong>.</p>
+    `Connect ${armLabel(record.kind, record.name)}?`,
+    `<p>Check this code matches the one in ${escapeHtml(codeWhere(record.kind))}:</p>
+<p><code style="font-size:1.4rem">${escapeHtml(code)}</code></p>
+<p>Once connected, Claude, ChatGPT and other AI apps you allow can use it as <strong>@${escapeHtml(session.login)}</strong>.</p>
 <form method="post" action="/pair/approve"><input type="hidden" name="code" value="${escapeHtml(code)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
 <p><button name="decision" value="approve">Connect</button> <button class="secondary" name="decision" value="deny">Deny</button></p></form>`,
   );
 }
+
+const expired = () =>
+  page('This code expired', '<p>It expired or was already used. Start again where you got it (for Chrome: the chrome-bridge popup → ⚙ Settings → Cloud AI apps).</p>', { status: 404 });
 
 export async function pairApprove(request: Request, env: HubEnv): Promise<Response> {
   const session = await requireSession(request, env);
@@ -95,19 +96,24 @@ export async function pairApprove(request: Request, env: HubEnv): Promise<Respon
   const form = await request.formData();
   const code = normCode(form.get('code'));
   if (!(await verify(`pair|${session.uid}|${code}`, String(form.get('csrf') ?? ''), env.COOKIE_ENCRYPTION_KEY))) {
-    return page('Pairing not confirmed', '<p>This form is stale or came from another page. Open the pairing link from the arm again.</p>', { status: 403 });
+    return page('Not connected', '<p>This page is out of date or came from another site, so nothing was connected. Start again from the chrome-bridge popup (⚙ Settings → Cloud AI apps).</p>', { status: 403 });
   }
   const record = await env.OAUTH_KV.get<PairRecord>(key(code), 'json');
-  if (!record || record.status !== 'pending' || record.expires < Date.now()) {
-    return page('Pairing code expired', '<p>This code expired or was already used. Start pairing again from the arm.</p>', { status: 404 });
-  }
+  if (!record || record.status !== 'pending' || record.expires < Date.now()) return expired();
   const ttl = Math.max(60, Math.ceil((record.expires - Date.now()) / 1000));
   if (form.get('decision') !== 'approve') {
     await env.OAUTH_KV.put(key(code), JSON.stringify({ ...record, status: 'denied' }), { expirationTtl: ttl });
-    return page('Pairing denied', '<p>Nothing was connected. You can close this tab.</p>');
+    return page('Not connected', '<p>Nothing was connected. You can close this tab.</p>');
   }
   const hub = env.USER_HUB.get(env.USER_HUB.idFromName(session.uid));
   const { token } = await hub.createArm(session.uid, record.kind, record.name);
   await env.OAUTH_KV.put(key(code), JSON.stringify({ ...record, status: 'approved', armToken: token }), { expirationTtl: ttl });
-  return page(`${record.name} connected`, `<p>${escapeHtml(kindName(record.kind))} “${escapeHtml(record.name)}” is now paired with your Cloud Bridge. You can close this tab.</p>`);
+  // Not a dead end: the next step is adding Cloud Bridge to an AI app.
+  return page(
+    'Now add Cloud Bridge to your AI app',
+    `<p>✓ ${escapeHtml(armLabel(record.kind, record.name))} is connected.</p>
+${addSteps(request.url)}
+<p class="note">Already added Cloud Bridge to Claude or ChatGPT? You're done: close this tab.</p>`,
+    { script: COPY_SCRIPT },
+  );
 }

@@ -20,7 +20,6 @@
     "bindings": [{ "name": "USER_HUB", "class_name": "UserHub" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserHub"] }],
-  "assets": { "directory": "./public" },
   // Errors only: per-request invocation logs would keep every request (sign-in
   // codes in URLs, bearer tokens) for 3 days, readable by the hub's operator.
   "observability": { "enabled": true, "logs": { "invocation_logs": false } },

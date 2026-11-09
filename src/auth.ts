@@ -1,4 +1,5 @@
 import { AuthorizationError, CimdFetchError, authorizationErrorRedirect, type AuthRequest, type OAuthHelpers } from '@cloudflare/workers-oauth-provider';
+import { armLabel, kindName } from './kinds';
 import { b64url, cookies, escapeHtml, page, randomToken, setCookie, sha256, sign, verify, cookieName } from './util';
 
 export type HubEnv = Env & { OAUTH_PROVIDER: OAuthHelpers };
@@ -108,14 +109,24 @@ export async function requireSession(request: Request, env: Env): Promise<Sessio
   return Response.redirect(new URL(`/login?next=${encodeURIComponent(u.pathname + u.search)}`, u).href, 302);
 }
 
-function consentPage(details: Awaited<ReturnType<OAuthHelpers['describeConsent']>>, handle: string, session: Session | null, headers: Headers): Response {
+type ArmSummary = { kind: string; name: string; online: boolean };
+
+// People's words: what the app gets ("your Chrome"), which profiles, and where access goes.
+function consentPage(details: Awaited<ReturnType<OAuthHelpers['describeConsent']>>, handle: string, session: Session | null, arms: ArmSummary[], headers: Headers): Response {
   const name = escapeHtml(details.clientName);
-  const origin = details.clientDomain ? `Published by <strong>${escapeHtml(details.clientDomain)}</strong>.` : 'This app registered itself; its name is not verified.';
+  const kinds = [...new Set(arms.map((a) => kindName(a.kind)))];
+  const what = kinds.length ? kinds.join(' and ') : 'Chrome';
+  const has = arms.length
+    ? `<p>It will be able to use ${arms.map((a) => `<strong>${escapeHtml(armLabel(a.kind, a.name))}</strong>`).join(', ')}: read and use your tabs, as you, in the accounts you're signed in to.</p>`
+    : session
+      ? "<p>It will be able to use the Chrome profiles you connect to Cloud Bridge: read and use your tabs, as you, in the accounts you're signed in to. None is connected yet: connect one from the chrome-bridge popup (⚙ Settings → Cloud AI apps).</p>"
+      : "<p>It will be able to use the Chrome profiles you connect to Cloud Bridge: read and use your tabs, as you, in the accounts you're signed in to.</p>";
+  const origin = details.clientDomain ? `Published by <strong>${escapeHtml(details.clientDomain)}</strong>. ` : '';
   const who = session ? `You're signed in as <strong>@${escapeHtml(session.login)}</strong>.` : 'Next you sign in with GitHub.';
   return page(
-    `Allow ${details.clientName} to use your arms?`,
-    `<p><strong>${name}</strong> will be able to use every arm you connected to Cloud Bridge, for example drive your real, logged-in Chrome.</p>
-<p>${origin} Access is sent to <strong>${escapeHtml(details.redirectHost)}</strong>.</p>
+    `Allow ${details.clientName} to use your ${what}?`,
+    `${has}
+<p>${origin}Access goes to <strong>${escapeHtml(details.redirectHost)}</strong>. Continue only if you're adding Cloud Bridge in ${name} right now.</p>
 ${details.redirectIsLoopback ? '<p><strong>This sends access to an app on your computer.</strong> Continue only if you just started connecting it.</p>' : ''}
 <p>${who}</p>
 <form method="post"><input type="hidden" name="handle" value="${escapeHtml(handle)}">
@@ -140,7 +151,8 @@ export async function authorize(request: Request, env: HubEnv): Promise<Response
       const authRequest = await oauth.parseAuthRequest(request);
       const details = await oauth.describeConsent(authRequest);
       const consent = await oauth.beginConsent(authRequest);
-      return consentPage(details, consent.handle, session, consent.headers);
+      const arms = session ? await env.USER_HUB.get(env.USER_HUB.idFromName(session.uid)).armSummary() : [];
+      return consentPage(details, consent.handle, session, arms, consent.headers);
     }
     const form = await request.formData();
     const handle = String(form.get('handle') ?? '');
