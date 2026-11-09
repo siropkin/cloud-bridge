@@ -19,7 +19,7 @@ Status: B1, the hub skeleton. It runs locally with a fake arm; it isn't deployed
   4. Connect to `armUrl` with subprotocols `cloud-bridge.v1` and `cbtoken.<armToken>`. A bad or revoked token is closed with code `4401`.
 - **Arm protocol** (JSON-RPC 2.0 text frames): the arm sends `arm/hello {kind, name, version, selector?, offlineHint?}`; the hub answers `arm/policy`, then asks `tools/list`; MCP calls become `tools/call {name, arguments, _meta}`. Heartbeat: the text frame `ping`, answered `pong` without waking the Durable Object.
 - **Errors are written for the model** and name the next step: no arm online, which arm to pick, an arm that dropped mid-call.
-- **Activity**: per call, metadata only (time, client, arm, tool, ok, ms, error); 30 days or 5,000 rows.
+- **Activity**: per call, metadata only (time, client, arm, tool name, ok, ms, and the hub's own error message; an arm's error text is never stored, since it can echo arguments); 30 days or 5,000 rows.
 
 ## Develop
 

@@ -257,7 +257,9 @@ export class UserHub extends DurableObject<Env> {
       const result = await this.request(ws, (ws.deserializeAttachment() as Attachment).connId, 'tools/call', { name: tool, arguments: resolved.args, _meta: { client: meta.client, session: meta.session } });
       const content = Array.isArray(result.content) ? (result.content as ToolResult['content']) : [{ type: 'text', text: JSON.stringify(result) }];
       const isError = result.isError === true;
-      this.record(meta, arm.id, name, !isError, Date.now() - started, isError ? firstText(content) : null);
+      // Never the arm's own error text: it can echo the command line (a chrome_batch
+      // "$ fill … -- <secret>") or page content. Metadata only.
+      this.record(meta, arm.id, name, !isError, Date.now() - started, isError ? ARM_ERROR : null);
       return { content, isError };
     } catch (error) {
       const text = `The ${arm.kind} "${arm.name}" failed on ${name}: ${(error as Error).message}. The command may or may not have run: check the current state before retrying.`;
@@ -287,7 +289,5 @@ export class UserHub extends DurableObject<Env> {
   }
 }
 
-function firstText(content: ToolResult['content']): string | null {
-  const t = content.find((c) => c.type === 'text');
-  return typeof t?.text === 'string' ? t.text.slice(0, 500) : null;
-}
+// Stored instead of an arm's error text (which may carry arguments or page content).
+export const ARM_ERROR = 'the arm reported an error';

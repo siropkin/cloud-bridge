@@ -190,6 +190,20 @@ describe('MCP through OAuth to arms', () => {
     expect(row.client).toBeTruthy();
     arm.ws.close();
   });
+  it('activity never stores the arm\'s error text, which can echo arguments', async () => {
+    const user = newUser();
+    const cookie = await cookieFor(user);
+    const { token } = await pairArm(cookie, 'fake', 'birch');
+    const arm = await connectArm(token, { name: 'birch', tools: [ECHO], onCall: (p) => ({ content: [{ type: 'text', text: `$ fill x @e5 -- ${p.arguments.text}` }], isError: true }) });
+    await arm.ready;
+    const client = await mcpClient(await accessToken(cookie));
+    const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hunter2' } });
+    expect(text(res)).toContain('hunter2'); // the caller still gets the arm's answer
+    const [row] = await env.USER_HUB.get(env.USER_HUB.idFromName(user.uid)).recentActivity(1);
+    expect(row).toMatchObject({ command: 'fake_echo', ok: 0, error: 'the arm reported an error' });
+    expect(JSON.stringify(row)).not.toContain('hunter2');
+    arm.ws.close();
+  });
   it('another user sees none of these arms', async () => {
     const owner = await cookieFor(newUser());
     const { token } = await pairArm(owner, 'fake', 'birch');
