@@ -97,7 +97,7 @@ describe('pairing', () => {
     const wrong = await hub('/pair/poll', { method: 'POST', body: JSON.stringify({ code: start.code, pollToken: 'x'.repeat(43) }) });
     expect(wrong.status).toBe(404);
     const html = await (await hub(`/pair?code=${start.code.toLowerCase().replace('-', '')}`, { headers: { Cookie: cookie } })).text();
-    expect(html).toContain('Connect fake “birch”?');
+    expect(html).toContain('Connect Fake “birch”?'); // the kind as people read it (was "Connect chrome …")
     const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1];
     const other = await cookieFor(newUser());
     const stolen = await hub('/pair/approve', { method: 'POST', headers: { Cookie: other, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code: start.code, csrf, decision: 'approve' }) });

@@ -30,6 +30,9 @@ function normCode(code: unknown): string {
 
 const key = (code: string) => `pair:${code}`;
 
+// The arm kind as people read it: "chrome" → "Chrome".
+const kindName = (kind: string) => kind.charAt(0).toUpperCase() + kind.slice(1);
+
 async function body(request: Request): Promise<Record<string, unknown>> {
   try {
     return (await request.json()) as Record<string, unknown>;
@@ -78,9 +81,9 @@ export async function pairPage(request: Request, env: HubEnv): Promise<Response>
   }
   const csrf = await csrfFor(session.uid, code, env.COOKIE_ENCRYPTION_KEY);
   return page(
-    `Connect ${record.kind} “${record.name}”?`,
+    `Connect ${kindName(record.kind)} “${record.name}”?`,
     `<p>Code <code>${escapeHtml(code)}</code>. Check it matches the one the arm shows.</p>
-<p>Once connected, AI apps you allow in Cloud Bridge can use this ${escapeHtml(record.kind)} as <strong>@${escapeHtml(session.login)}</strong>.</p>
+<p>Once connected, AI apps you allow in Cloud Bridge can use this ${escapeHtml(kindName(record.kind))} as <strong>@${escapeHtml(session.login)}</strong>.</p>
 <form method="post" action="/pair/approve"><input type="hidden" name="code" value="${escapeHtml(code)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
 <p><button name="decision" value="approve">Connect</button> <button class="secondary" name="decision" value="deny">Deny</button></p></form>`,
   );
@@ -106,5 +109,5 @@ export async function pairApprove(request: Request, env: HubEnv): Promise<Respon
   const hub = env.USER_HUB.get(env.USER_HUB.idFromName(session.uid));
   const { token } = await hub.createArm(session.uid, record.kind, record.name);
   await env.OAUTH_KV.put(key(code), JSON.stringify({ ...record, status: 'approved', armToken: token }), { expirationTtl: ttl });
-  return page(`${record.name} connected`, `<p>The ${escapeHtml(record.kind)} “${escapeHtml(record.name)}” is now paired with your Cloud Bridge. You can close this tab.</p>`);
+  return page(`${record.name} connected`, `<p>${escapeHtml(kindName(record.kind))} “${escapeHtml(record.name)}” is now paired with your Cloud Bridge. You can close this tab.</p>`);
 }
