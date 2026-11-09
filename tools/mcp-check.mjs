@@ -3,7 +3,9 @@
 // OAuth 2.1 flow (dynamic registration, PKCE, loopback callback), then lists
 // the hub's tools and optionally calls one.
 //
-//   node tools/mcp-check.mjs [--hub http://localhost:8787] [--call <tool> '<json args>'] [--open "<cmd>"]
+//   node tools/mcp-check.mjs [--hub http://localhost:8787] [--call <tool> '<json args>']... [--open "<cmd>"]
+//
+// --call repeats: the calls run in order over one session (one sign-in).
 //
 // It prints the authorization URL; open it in the browser that is signed in to
 // the hub (--open runs a command with the URL appended, e.g. chrome-bridge's
@@ -20,8 +22,7 @@ const opt = (name) => {
 const HUB = (opt('hub') ?? 'http://localhost:8787').replace(/\/$/, '');
 const PORT = 8790;
 const REDIRECT = `http://127.0.0.1:${PORT}/callback`;
-const callIdx = args.indexOf('--call');
-const CALL = callIdx >= 0 ? { name: args[callIdx + 1], arguments: JSON.parse(args[callIdx + 2] ?? '{}') } : null;
+const CALLS = args.flatMap((a, i) => (a === '--call' ? [{ name: args[i + 1], arguments: JSON.parse(args[i + 2] ?? '{}') }] : []));
 
 const store = {};
 const provider = {
@@ -82,9 +83,16 @@ async function connect() {
 const client = await connect();
 console.log('connected; server instructions:', JSON.stringify(client.getInstructions?.() ?? null));
 const { tools } = await client.listTools();
-console.log('tools/list:', JSON.stringify(tools.map((t) => ({ name: t.name, args: Object.keys(t.inputSchema?.properties ?? {}) }))));
-if (CALL) {
-  const res = await client.callTool(CALL);
-  console.log(`tools/call ${CALL.name}:`, JSON.stringify(res));
+// What the Inspector shows: name, title, arguments (* = required) and the annotation hints AI apps act on.
+console.log(`tools/list: ${tools.length} tools`);
+for (const t of tools) {
+  const req = new Set(t.inputSchema?.required ?? []);
+  const hints = Object.entries(t.annotations ?? {}).filter(([k, v]) => k.endsWith('Hint') && v).map(([k]) => k.replace('Hint', ''));
+  console.log(`  ${t.name} — ${t.title ?? ''} (${Object.keys(t.inputSchema?.properties ?? {}).map((k) => k + (req.has(k) ? '*' : '')).join(', ')}) [${hints.join(', ') || 'no hints'}]`);
+}
+for (const call of CALLS) {
+  const res = await client.callTool(call);
+  const shown = { ...res, content: res.content?.map((c) => (c.type === 'image' ? { type: 'image', mimeType: c.mimeType, bytes: Math.round((c.data?.length ?? 0) * 0.75) } : c)) };
+  console.log(`tools/call ${call.name}:`, JSON.stringify(shown));
 }
 await client.close();

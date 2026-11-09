@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { buildToolList, resolveCall, type ArmInfo, type ArmTool, type HubTool } from './tools';
 import { randomToken, sha256, b64url } from './util';
+import { downloadPublic } from './download';
 
 export const ARM_PROTOCOL = 'cloud-bridge.v1';
 const ARM_KINDS = /^[a-z][a-z0-9-]{0,23}$/;
@@ -175,6 +176,7 @@ export class UserHub extends DurableObject<Env> {
       return;
     }
     if (msg.method === 'arm/hello') return this.hello(ws, att, msg.params ?? {});
+    if (msg.method === 'arm/download' && msg.id !== undefined) return this.download(ws, msg.id, msg.params ?? {});
     if (msg.id !== undefined && !msg.method) {
       const p = this.pending.get(String(msg.id));
       if (!p) return;
@@ -235,6 +237,28 @@ export class UserHub extends DurableObject<Env> {
       } catch {
         // the socket itself is what failed
       }
+    }
+  }
+
+  // An arm asks the hub to fetch a public URL for it (chrome-bridge's cloud
+  // upload): see download.ts for why the browser must not fetch it itself.
+  private downloads = 0;
+  private async download(ws: WebSocket, id: string | number, params: Record<string, unknown>): Promise<void> {
+    const answer = (body: Record<string, unknown>) => {
+      try {
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id, ...body }));
+      } catch {
+        // the arm went away; nothing to tell
+      }
+    };
+    if (this.downloads >= 2) return answer({ error: { code: -32000, message: 'Cloud Bridge is already downloading two files for you; upload them one call at a time' } });
+    this.downloads++;
+    try {
+      answer({ result: { ...(await downloadPublic(String(params.url ?? ''))) } });
+    } catch (error) {
+      answer({ error: { code: -32000, message: (error as Error).message } });
+    } finally {
+      this.downloads--;
     }
   }
 

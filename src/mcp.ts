@@ -7,7 +7,8 @@ import pkg from '../package.json';
 // Descriptive, not orders: Claude read the earlier imperative wording ("tell the
 // user exactly…") as a possible prompt injection and paused.
 const INSTRUCTIONS = `Cloud Bridge connects this conversation to the user's own Chrome (through the chrome-bridge extension): their real tabs, signed in to their accounts.
-The chrome and chrome_batch tools take chrome-bridge command lines. When no Chrome is connected or online, the tool's answer says what the user can do about it, which is useful to pass on.
+The chrome_* tools each do one step (chrome_tabs, chrome_snap, chrome_click, chrome_fill, …); chrome and chrome_batch take any chrome-bridge command line. The reading tools (chrome_tabs, chrome_snap, chrome_shot, chrome_measure, chrome_wait, chrome_release) are marked read-only, so the user can allow them once instead of on every call.
+When no Chrome is connected or online, the tool's answer says what the user can do about it, which is useful to pass on.
 When the user has connected several Chrome profiles, the tools take a profile argument that names one.`;
 
 function hubFor(userId: string) {

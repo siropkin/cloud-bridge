@@ -7,10 +7,11 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --var MCP_RESOURCE:http://localhost:8787/mcp",
-    "test": "vitest run",
+    "test": "node tools/sync-chrome-tools.mjs --check --if-present && vitest run",
     "type-check": "tsc --noEmit",
     "cf-typegen": "wrangler types",
-    "fake-arm": "node tools/fake-arm.mjs"
+    "fake-arm": "node tools/fake-arm.mjs",
+    "sync-chrome-tools": "node tools/sync-chrome-tools.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^1.2.4",

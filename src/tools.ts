@@ -50,37 +50,40 @@ function byKind(arms: ArmInfo[]): Map<string, ArmInfo[]> {
 // Tools of every PAIRED arm, online or not: a client that cached tools/list
 // still gets a useful "start your arm" answer instead of "unknown tool". Known
 // kinds with nothing paired yet list their tools too, so the list a client
-// caches when the connector is added already has them.
+// caches when the connector is added already has them. Annotations
+// (readOnlyHint…) pass through as the arm wrote them: AI apps use them to
+// decide which calls need the user's OK.
 export function buildToolList(arms: ArmInfo[], known: Record<string, KnownKind> = KNOWN_KINDS): HubTool[] {
   const out: HubTool[] = [];
   const kinds = byKind(arms);
   for (const [kind, k] of Object.entries(known)) {
     if (kinds.has(kind)) continue;
-    for (const tool of k.tools) out.push({ ...tool, name: hubToolName(kind, tool.name), inputSchema: { type: 'object' as const, ...(tool.inputSchema ?? {}) } });
+    const pick = `Which ${kind} to use, by name, once the user has connected more than one. Leave it out otherwise.`;
+    for (const tool of k.tools) out.push({ ...tool, name: hubToolName(kind, tool.name), inputSchema: withSelector(tool, k.selector, pick) });
   }
   for (const [kind, group] of kinds) {
     const seen = new Set<string>();
-    const selector = group[0].selector;
+    // Offered even with one arm paired: AI apps cache the list, and a second
+    // arm paired later must not need a refresh before the model can pick one.
+    const pick =
+      group.length > 1
+        ? `Which ${kind} to use: ${names(group)}. Required while more than one is online.`
+        : `Which ${kind} to use, by name (connected: ${names(group)}). Only needed once the user has connected more than one.`;
     for (const arm of group) {
       for (const tool of arm.tools) {
         const name = hubToolName(kind, tool.name);
         if (seen.has(name)) continue;
         seen.add(name);
-        const schema = { type: 'object' as const, ...(tool.inputSchema ?? {}) };
-        if (group.length > 1) {
-          schema.properties = {
-            ...(schema.properties ?? {}),
-            [selector]: {
-              type: 'string',
-              description: `Which ${kind} to use: ${names(group)}. Required while more than one is online.`,
-            },
-          };
-        }
-        out.push({ ...tool, name, inputSchema: schema });
+        out.push({ ...tool, name, inputSchema: withSelector(tool, group[0].selector, pick) });
       }
     }
   }
   return out;
+}
+
+function withSelector(tool: ArmTool, selector: string, description: string): HubTool['inputSchema'] {
+  const schema = { type: 'object' as const, ...(tool.inputSchema ?? {}) };
+  return { ...schema, properties: { ...(schema.properties ?? {}), [selector]: { type: 'string', description } } };
 }
 
 // Alphabetical: a stable list reads better to a model than connect order.

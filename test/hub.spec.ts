@@ -1,3 +1,4 @@
+import chromeTools from '../src/chrome-tools.json';
 import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import { safeNext } from '../src/auth';
@@ -5,6 +6,9 @@ import type { UserHub } from '../src/hub';
 import { describe, expect, it } from 'vitest';
 import { COPY_SCRIPT } from '../src/guide';
 import { accessToken, connectArm, cookieFor, ECHO, hub, mcpClient, newUser, ORIGIN, pairArm, SNAP } from './helpers';
+
+// What a hub with no Chrome paired lists (synced from chrome-bridge).
+const CHROME = chromeTools.map((t) => t.name);
 
 const text = (r: any) => r.content.map((c: any) => c.text).join('\n');
 
@@ -179,7 +183,7 @@ describe('MCP through OAuth to arms', () => {
     await arm.ready;
     const client = await mcpClient(await accessToken(cookie));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(['chrome', 'chrome_batch', 'fake_echo', 'fake_snap']);
+    expect(tools.map((t) => t.name)).toEqual([...CHROME, 'fake_echo', 'fake_snap']);
     const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hi' } });
     expect(res.isError).toBeFalsy();
     expect(text(res)).toBe('echo:hi');
@@ -211,7 +215,7 @@ describe('MCP through OAuth to arms', () => {
     const arm = await connectArm(token, { name: 'birch', tools: [ECHO] });
     await arm.ready;
     const client = await mcpClient(await accessToken(await cookieFor(newUser())));
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(['chrome', 'chrome_batch']); // the built-in Chrome tools only
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(CHROME); // the built-in Chrome tools only
     arm.ws.close();
   });
   it('a disconnected arm answers with what to do next', async () => {
@@ -222,7 +226,7 @@ describe('MCP through OAuth to arms', () => {
     arm.ws.close(1000, 'bye');
     await new Promise((r) => setTimeout(r, 50));
     const client = await mcpClient(await accessToken(cookie));
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(['chrome', 'chrome_batch', 'fake_echo']);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual([...CHROME, 'fake_echo']);
     const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hi' } });
     expect(res.isError).toBe(true);
     expect(text(res)).toMatch(/^No fake is online \(paired: birch, last seen \d+s ago\)\. Ask the user to run the fake arm, then call this tool again\.$/);
@@ -311,18 +315,43 @@ describe('signing out (off → on → off leaves at most one record: the arm rev
   });
 });
 
+describe('arm/download (files for an upload, fetched by the hub)', () => {
+  it('answers an arm\'s request with the next step when the URL is private, without fetching', async () => {
+    const cookie = await cookieFor(newUser());
+    const { token } = await pairArm(cookie, 'chrome', 'poplar');
+    const arm = await connectArm(token, { kind: 'chrome', name: 'poplar', selector: 'profile', tools: [] });
+    await arm.ready;
+    arm.ws.send(JSON.stringify({ jsonrpc: '2.0', id: 'd1', method: 'arm/download', params: { url: 'http://localhost./secret' } }));
+    arm.ws.send(JSON.stringify({ jsonrpc: '2.0', id: 'd2', method: 'arm/download', params: {} }));
+    await new Promise((r) => setTimeout(r, 50));
+    const answers = arm.received.filter((m: any) => m.id === 'd1' || m.id === 'd2') as any[];
+    expect(answers.map((m) => [m.id, m.error?.message])).toEqual([
+      ['d1', 'localhost. is a private-network address; Cloud Bridge only downloads upload files from public addresses — send the file as base64 instead'],
+      ['d2', ' is not an http(s) URL'],
+    ]);
+    arm.ws.close();
+  });
+});
+
 describe('a connector added before Chrome pairs', () => {
   it('already lists chrome and chrome_batch, which answer with how to connect Chrome', async () => {
     const cookie = await cookieFor(newUser());
     const client = await mcpClient(await accessToken(cookie));
-    const before = (await client.listTools()).tools.map((t) => t.name);
-    expect(before).toEqual(['chrome', 'chrome_batch']);
+    const listed = (await client.listTools()).tools;
+    const before = listed.map((t) => t.name);
+    expect(before).toEqual(CHROME);
+    // Through the real MCP server: annotations reach the client (AI apps skip the prompt on read-only tools), and so does profile.
+    const snap = listed.find((t) => t.name === 'chrome_snap')!;
+    expect(snap.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(listed.find((t) => t.name === 'chrome_click')!.annotations).toMatchObject({ readOnlyHint: false });
+    expect(snap.inputSchema.properties).toHaveProperty('profile');
+    expect(snap.inputSchema.required).toEqual(['tab']);
     const res = await client.callTool({ name: 'chrome', arguments: { command: 'tabs' } });
     expect(res.isError).toBe(true);
     expect(text(res)).toMatch(/^No Chrome is connected to the user's Cloud Bridge yet, so nothing ran\. .*⚙ Settings → Cloud AI apps → Connect\. Once they have, call this tool again\.$/);
     // Chrome pairs later: same names, now the arm's own tools, and the cached name routes.
     const { token } = await pairArm(cookie, 'chrome', 'poplar');
-    const arm = await connectArm(token, { kind: 'chrome', name: 'poplar', selector: 'profile', tools: [{ name: 'chrome', description: 'real', inputSchema: { type: 'object', properties: { command: { type: 'string' } } } }, { name: 'chrome_batch', inputSchema: { type: 'object' } }], onCall: (p) => ({ content: [{ type: 'text', text: `ran ${p.arguments.command}` }] }) });
+    const arm = await connectArm(token, { kind: 'chrome', name: 'poplar', selector: 'profile', tools: chromeTools.map((t) => (t.name === 'chrome' ? { ...t, description: 'real' } : t)) as any, onCall: (p) => ({ content: [{ type: 'text', text: `ran ${p.arguments.command}` }] }) });
     await arm.ready;
     const after = (await client.listTools()).tools;
     expect(after.map((t) => t.name)).toEqual(before);

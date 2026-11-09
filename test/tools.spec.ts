@@ -14,13 +14,18 @@ describe('hubToolName', () => {
 });
 
 describe('buildToolList', () => {
-  it('lists each tool once per kind, with the selector only when several arms are paired', () => {
+  it('lists each tool once per kind, always with the selector (a cached list must survive a second pairing)', () => {
     const one = buildToolList([arm({})]);
     expect(one.map((t) => t.name)).toEqual(['chrome', 'chrome_snap']);
-    expect(one[0].inputSchema.properties).not.toHaveProperty('profile');
+    expect((one[0].inputSchema.properties as any).profile.description).toBe('Which chrome to use, by name (connected: birch). Only needed once the user has connected more than one.');
+    expect(one[0].inputSchema.properties).toHaveProperty('x');
     const two = buildToolList([arm({ name: 'birch' }), arm({ name: 'oak', id: 'oak' })]);
     expect(two.map((t) => t.name)).toEqual(['chrome', 'chrome_snap']);
     expect((two[0].inputSchema.properties as any).profile.description).toContain('birch, oak');
+  });
+  it('passes the arm\'s annotations and title through untouched', () => {
+    const tool = { ...T('snap'), title: 'Read a tab', annotations: { readOnlyHint: true, destructiveHint: false } };
+    expect(buildToolList([arm({ tools: [tool] })])[0]).toMatchObject({ name: 'chrome_snap', title: 'Read a tab', annotations: { readOnlyHint: true, destructiveHint: false } });
   });
   it('keeps offline arms\' tools listed so a cached client gets a next-step error', () => {
     expect(buildToolList([arm({ online: false })]).map((t) => t.name)).toEqual(['chrome', 'chrome_snap']);
@@ -68,11 +73,21 @@ describe('ago', () => {
 });
 
 describe('known kinds before any arm is paired', () => {
-  const known = { chrome: { label: 'Chrome profile', connectWhere: 'x', codeWhere: 'x', tools: [T('chrome')], notConnected: 'Install it, then connect.' } };
+  const known = { chrome: { label: 'Chrome profile', connectWhere: 'x', codeWhere: 'x', tools: [T('chrome')], selector: 'profile', notConnected: 'Install it, then connect.' } };
   it('lists the kind\'s tools only while none of that kind is paired', () => {
     expect(buildToolList([], known).map((t) => t.name)).toEqual(['chrome']);
     expect(buildToolList([arm({ tools: [T('chrome'), T('snap')] })], known).map((t) => t.name)).toEqual(['chrome', 'chrome_snap']);
     expect(buildToolList([arm({ kind: 'fake', tools: [T('echo')] })], known).map((t) => t.name)).toEqual(['chrome', 'fake_echo']);
+  });
+  it('offers the selector before any pairing too', () => {
+    expect((buildToolList([], known)[0].inputSchema.properties as any).profile.description).toMatch(/^Which chrome to use, by name, once the user has connected more than one/);
+  });
+  it('ships chrome-bridge\'s typed tools with their read-only hints', () => {
+    const tools = buildToolList([]);
+    expect(tools.map((t) => t.name)).toEqual(['chrome', 'chrome_batch', 'chrome_tabs', 'chrome_snap', 'chrome_shot', 'chrome_measure', 'chrome_wait', 'chrome_release', 'chrome_open', 'chrome_nav', 'chrome_click', 'chrome_fill', 'chrome_press', 'chrome_upload', 'chrome_close']);
+    expect(tools.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name)).toEqual(['chrome_tabs', 'chrome_snap', 'chrome_shot', 'chrome_measure', 'chrome_wait', 'chrome_release']);
+    expect(tools.every((t) => !('command' in t))).toBe(true);
+    for (const t of tools) expect(resolveCall([], t.name, {}, 0)).toMatchObject({ ok: false, error: expect.stringContaining('No Chrome is connected') });
   });
   it('answers a call with how to connect one', () => {
     expect(resolveCall([], 'chrome', {}, 0, known)).toEqual({ ok: false, error: 'Install it, then connect.' });

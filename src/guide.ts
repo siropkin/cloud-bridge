@@ -12,7 +12,7 @@ const APPS = {
       'Name it <b>Cloud Bridge</b>, paste the link, click <b>Add</b>, then <b>Connect</b>.',
       'On the Cloud Bridge page that opens, click <b>Allow</b>.',
     ],
-    after: 'Claude asks before each action it takes in your Chrome. Choose <b>Always allow</b> for the ones you trust.',
+    after: 'Claude asks before it acts in your Chrome. Reading (listing tabs, reading a page, screenshots) can be allowed once for good; for other actions you trust, choose <b>Always allow</b>.',
   },
   chatgpt: {
     name: 'ChatGPT',
