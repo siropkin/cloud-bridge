@@ -11,6 +11,7 @@ The hub of Cloud Bridge. Arms (first: the [chrome-bridge](https://github.com/sir
 
 ## Developing
 
+- Product bar: an AI-first, open-source tool that anyone — not only IT people — can set up and use, and that AI agents love to use. Pages a person sees speak plain words with one obvious next action (no "hub", "pair", "MCP"); everything a model reads names the next step.
 - Gates before pushing: `npm test`, `npm run type-check`, `npx wrangler deploy --dry-run`. A protocol or auth change also gets a live run: `npm run dev` + `npm run fake-arm` + `node tools/mcp-check.mjs --call fake_echo '{"text":"hi"}'`.
 - Fetch current docs before touching Cloudflare, `@cloudflare/workers-oauth-provider` (its `docs/` folder in node_modules is current), `agents` or the MCP SDK: these move fast. After a `wrangler.jsonc` change run `npm run cf-typegen` and commit `worker-configuration.d.ts`.
 - The hub stays arm-agnostic: it never parses an arm's commands. Arms describe themselves (`arm/hello`, `tools/list`).
