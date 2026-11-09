@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cloud-bridge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // global_fetch_strictly_public: fetch() can't reach private addresses, which lets the
+  // OAuth library fetch Client ID Metadata Documents (CIMD) safely for MCP clients.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "vars": {
+    // The URL MCP clients connect to; every access token is bound to it.
+    // B2 sets the deployed https://cloud-bridge.<sub>.workers.dev/mcp before the first deploy.
+    "MCP_RESOURCE": "http://localhost:8787/mcp",
+    // How long a tools/call waits for the arm's answer.
+    "ARM_CALL_TIMEOUT_MS": "120000"
+  },
+  // No id yet: wrangler dev simulates it locally. B2 creates the real namespace (approval).
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  "durable_objects": {
+    "bindings": [{ "name": "USER_HUB", "class_name": "UserHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserHub"] }],
+  "assets": { "directory": "./public" },
+  "observability": { "enabled": true },
+  "dev": { "port": 8787 },
+  "secrets": {
+    "required": ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "COOKIE_ENCRYPTION_KEY"]
+  }
+}

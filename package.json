@@ -1,0 +1,27 @@
+{
+  "name": "cloud-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloud Bridge hub: lets cloud AIs (Claude.ai, ChatGPT, remote-MCP clients) drive arms such as the chrome-bridge extension.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "type-check": "tsc --noEmit",
+    "cf-typegen": "wrangler types",
+    "fake-arm": "node tools/fake-arm.mjs"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.4",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "agents": "^0.33.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.6.0",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.158.0"
+  }
+}
