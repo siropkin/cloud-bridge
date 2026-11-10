@@ -398,7 +398,25 @@ describe('pages people read', () => {
     expect(html).toContain('<strong>Chrome profile “poplar”</strong>');
     expect(html).toContain("Access goes to <strong>claude.ai</strong>. Continue only if you're adding Cloud Bridge in Claude right now.");
     expect(html).not.toContain('not verified');
+    expect(html).not.toContain('Careful');
     expect(plain(html)).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b/i);
+  });
+  it('an app that calls itself Claude or ChatGPT but sends access elsewhere is called out (S1)', async () => {
+    const cookie = await cookieFor(newUser());
+    const consent = async (client_name: string, redirect: string) => {
+      const reg = (await (await hub('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ redirect_uris: [redirect], client_name, token_endpoint_auth_method: 'none' }) })).json()) as any;
+      const q = new URLSearchParams({ response_type: 'code', client_id: reg.client_id, redirect_uri: redirect, code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', resource: env.MCP_RESOURCE });
+      return (await hub(`/authorize?${q}`, { headers: { Cookie: cookie } })).text();
+    };
+    const fake = await consent('Claude', 'https://claude.ai.evil.example/api/mcp/auth_callback');
+    expect(fake).toContain('Allow an app calling itself Claude to use your Chrome?');
+    expect(fake).toContain('Careful: this may not be Claude.</strong> It calls itself Claude, but Claude sends you back to claude.ai, and this app sends access to <strong>claude.ai.evil.example</strong>. Click Deny unless you set this app up yourself.');
+    expect(fake).toContain('<button class="secondary" name="decision" value="approve">Allow</button> <button name="decision" value="deny">Deny</button>');
+    expect(await consent('ChatGPT connector', 'https://chatgpt.evil.example/cb')).toContain('Careful: this may not be ChatGPT.');
+    // The real ones, an app on this computer, and apps that claim no vendor's name pass quietly.
+    for (const [name, redirect] of [['ChatGPT', 'https://chatgpt.com/connector_platform_oauth_redirect'], ['Claude', 'https://claude.ai/api/mcp/auth_callback'], ['Claude Code', 'http://127.0.0.1:33418/callback'], ['My tool', 'https://tool.example/cb']]) {
+      expect(await consent(name, redirect)).not.toContain('Careful');
+    }
   });
   it('the pairing page shows the code and says where to compare it; Connect leads to adding the AI app', async () => {
     const cookie = await cookieFor(newUser());

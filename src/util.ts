@@ -89,7 +89,8 @@ button.secondary{background:#fff;color:#7c3aed}.note{color:#666;font-size:.9rem}
 a.button{display:inline-block;text-decoration:none;font-weight:600;padding:.45rem 1rem;border-radius:.4rem;border:1px solid #7c3aed;color:#7c3aed}
 .link{display:flex;gap:.5rem;align-items:center;margin:.5rem 0}.link code{user-select:all;word-break:break-all}
 section{border:1px solid #ddd6fe;border-radius:.6rem;padding:.2rem 1rem 1rem;margin:1rem 0}ol{padding-left:1.3rem}li{margin:.25rem 0}
-@media(prefers-color-scheme:dark){body{background:#16131f;color:#eee}button.secondary{background:#16131f}code{background:#2a2340}.note{color:#aaa}a.button{color:#c4b5fd;border-color:#a78bfa}section{border-color:#3b2f5c}}</style>
+.warn{border-left:4px solid #dc2626;background:#fef2f2;padding:.5rem .8rem;border-radius:.3rem}
+@media(prefers-color-scheme:dark){body{background:#16131f;color:#eee}button.secondary{background:#16131f}code{background:#2a2340}.note{color:#aaa}a.button{color:#c4b5fd;border-color:#a78bfa}section{border-color:#3b2f5c}.warn{background:#3a1518}}</style>
 <h1>${init.icon ?? '🟣'} ${escapeHtml(title)}</h1>${body}${init.script ? `<script>${init.script.code}</script>` : ''}</html>`;
   return new Response(html, { status: init.status ?? 200, headers });
 }

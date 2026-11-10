@@ -113,9 +113,35 @@ export async function requireSession(request: Request, env: Env): Promise<Sessio
 
 type ArmSummary = { kind: string; name: string; online: boolean };
 
+// Self-registered apps name themselves: one called "Claude" that sent access to
+// claude.ai.evil.example got the same page as Claude, on the real hub's address
+// (S1). These vendors' web apps return to their own domains; an app on this
+// computer (loopback, or a custom scheme like claude://) keeps access here.
+const VENDORS = [
+  { name: /claude|anthropic/i, label: 'Claude', domains: ['claude.ai', 'claude.com', 'anthropic.com'] },
+  { name: /chat\s*gpt|openai/i, label: 'ChatGPT', domains: ['chatgpt.com', 'openai.com'] },
+];
+export function impostor(details: { clientName: string; clientDomain?: string; redirectUri: string; redirectIsLoopback: boolean }): { label: string; home: string; host: string } | null {
+  if (details.redirectIsLoopback) return null;
+  let host: string;
+  try {
+    const u = new URL(details.redirectUri);
+    if (u.protocol !== 'https:') return null;
+    host = u.hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return null;
+  }
+  const vendor = VENDORS.find((v) => v.name.test(details.clientName));
+  if (!vendor) return null;
+  const at = (h: string) => vendor.domains.some((d) => h === d || h.endsWith(`.${d}`));
+  if (at(host) && (!details.clientDomain || at(details.clientDomain.toLowerCase()))) return null;
+  return { label: vendor.label, home: vendor.domains[0], host };
+}
+
 // People's words: what the app gets ("your Chrome"), which profiles, and where access goes.
 function consentPage(details: Awaited<ReturnType<OAuthHelpers['describeConsent']>>, handle: string, session: Session | null, arms: ArmSummary[], headers: Headers): Response {
   const name = escapeHtml(details.clientName);
+  const fake = impostor(details);
   const kinds = [...new Set(arms.map((a) => kindName(a.kind)))];
   const what = kinds.length ? kinds.join(' and ') : 'Chrome';
   const has = arms.length
@@ -125,14 +151,18 @@ function consentPage(details: Awaited<ReturnType<OAuthHelpers['describeConsent']
       : "<p>It will be able to use the Chrome profiles you connect to Cloud Bridge: read and use your tabs, as you, in the accounts you're signed in to.</p>";
   const origin = details.clientDomain ? `Published by <strong>${escapeHtml(details.clientDomain)}</strong>. ` : '';
   const who = session ? `You're signed in as <strong>@${escapeHtml(session.login)}</strong>.` : 'Next you sign in with GitHub.';
+  const warning = fake
+    ? `<p class="warn"><strong>Careful: this may not be ${fake.label}.</strong> It calls itself ${name}, but ${fake.label} sends you back to ${fake.home}, and this app sends access to <strong>${escapeHtml(fake.host)}</strong>. Click Deny unless you set this app up yourself.</p>\n`
+    : '';
+  const [allow, deny] = fake ? ['secondary', ''] : ['', 'secondary'];
   return page(
-    `Allow ${details.clientName} to use your ${what}?`,
-    `${has}
+    fake ? `Allow an app calling itself ${details.clientName} to use your ${what}?` : `Allow ${details.clientName} to use your ${what}?`,
+    `${warning}${has}
 <p>${origin}Access goes to <strong>${escapeHtml(details.redirectHost)}</strong>. Continue only if you're adding Cloud Bridge in ${name} right now.</p>
 ${details.redirectIsLoopback ? '<p><strong>This sends access to an app on your computer.</strong> Continue only if you just started connecting it.</p>' : ''}
 <p>${who}</p>
 <form method="post"><input type="hidden" name="handle" value="${escapeHtml(handle)}">
-<p><button name="decision" value="approve">Allow</button> <button class="secondary" name="decision" value="deny">Deny</button></p></form>`,
+<p><button${allow ? ` class="${allow}"` : ''} name="decision" value="approve">Allow</button> <button${deny ? ` class="${deny}"` : ''} name="decision" value="deny">Deny</button></p></form>`,
     { headers, formRedirects: true },
   );
 }
