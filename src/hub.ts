@@ -248,10 +248,13 @@ export class UserHub extends DurableObject<Env> {
     this.gone(ws, 'connection error');
   }
 
-  private gone(ws: WebSocket, why: string): void {
+  // seen: when the arm was last heard from. A socket closed for its silence was
+  // last heard at its last ping, not now: stamping now made a Chrome asleep all
+  // night read "last seen 7s ago" to an AI app (found live, 2026-11-10).
+  private gone(ws: WebSocket, why: string, seen = Date.now()): void {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att) return;
-    this.sql.exec('UPDATE arms SET last_seen = ? WHERE id = ?', Date.now(), att.armId);
+    this.sql.exec('UPDATE arms SET last_seen = MAX(COALESCE(last_seen, 0), ?) WHERE id = ?', seen, att.armId);
     for (const [id, p] of this.pending) {
       if (p.connId !== att.connId) continue;
       this.pending.delete(id);
@@ -407,7 +410,7 @@ export class UserHub extends DurableObject<Env> {
     if (!att?.ready || ws.readyState !== WebSocket.OPEN) return null;
     const heard = Math.max(this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0, att.since ?? 0);
     if (now - heard <= HEARTBEAT_STALE_MS) return att;
-    this.gone(ws, 'stopped sending heartbeats');
+    this.gone(ws, 'stopped sending heartbeats', heard);
     try {
       ws.close(4003, 'no heartbeat: reconnect');
     } catch {

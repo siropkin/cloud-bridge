@@ -508,11 +508,13 @@ describe('heartbeats', () => {
     await runInDurableObject(stub, (_: UserHub, state) => {
       const ws = state.getWebSockets()[0];
       ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), since: Date.now() - 10 * 60_000 });
+      state.storage.sql.exec('UPDATE arms SET last_seen = ?', Date.now() - 10 * 60_000);
     });
     const started = Date.now();
     const res = await stub.callTool('fake_echo', { text: 'x' });
     expect(Date.now() - started).toBeLessThan(1000);
-    expect(res.content[0].text).toMatch(/^No fake is online \(paired: birch, last seen \d+s ago\)\. Ask the user to run the fake arm, then call this tool again\.$/);
+    // Last seen when it last pinged, not when the hub noticed (found live: a Chrome asleep all night read "7s ago").
+    expect(res.content[0].text).toMatch(/^No fake is online \(paired: birch, last seen 10 min ago\)\. Ask the user to run the fake arm, then call this tool again\.$/);
     expect((await arm.closed).code).toBe(4003);
   });
   it('a pinging socket stays online', async () => {
