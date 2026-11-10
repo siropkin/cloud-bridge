@@ -69,6 +69,36 @@ describe('OAuth and sign-in state live in Durable Objects, not KV (S1: free KV t
     expect((await storeOf(name).get(name))?.value).toContain(reg.client_id);
   });
 
+  it('a user\'s grants from before the move are listed (re-authorizing revokes them by listing), then live here only (review)', async () => {
+    const store = oauthKv(env);
+    const uid = `gh-legacy-${crypto.randomUUID()}`;
+    const expiration = Math.floor(Date.now() / 1000) + 7200;
+    for (const g of ['g1', 'g2']) await env.OAUTH_KV.put(`grant:${uid}:${g}`, JSON.stringify({ id: g }), { expiration, metadata: { clientId: 'c1' } });
+    await store.put(`grant:${uid}:g3`, '{"id":"g3"}');
+    const listed = await store.list({ prefix: `grant:${uid}:` });
+    expect(listed.keys.map((k) => k.name)).toEqual([`grant:${uid}:g1`, `grant:${uid}:g2`, `grant:${uid}:g3`]);
+    expect(listed.keys[0]).toEqual({ name: `grant:${uid}:g1`, expiration, metadata: { clientId: 'c1' } });
+    expect((await env.OAUTH_KV.list({ prefix: `grant:${uid}:` })).keys).toEqual([]);
+  });
+
+  it('a deleted key never comes back from KV, and a move whose KV delete fails fails the read (review)', async () => {
+    const uid = `gh-legacy-${crypto.randomUUID()}`;
+    const name = `grant:${uid}:g1`;
+    // A copy in KV beside a newer one here (a move whose KV delete was lost): delete removes both.
+    await env.OAUTH_KV.put(name, '{"v":0}');
+    await storeOf(name).put(name, '{"v":1}', null, null);
+    const store = oauthKv(env);
+    await store.delete(name);
+    expect(await store.get(name)).toBeNull();
+    expect(await env.OAUTH_KV.get(name)).toBeNull();
+    // KV refuses the delete during a move: the read fails, nothing is kept here, KV still answers next time.
+    await env.OAUTH_KV.put(name, '{"v":0}');
+    const failing = oauthKv({ ...env, OAUTH_KV: { get: (n: string, t: any) => env.OAUTH_KV.get(n, t), list: (o: any) => env.OAUTH_KV.list(o), delete: async () => { throw new Error('KV delete limit exceeded'); } } as unknown as KVNamespace });
+    await expect(failing.get(name)).rejects.toThrow('KV delete limit exceeded');
+    expect(await storeOf(name).get(name)).toBeNull();
+    expect(await store.get(name)).toBe('{"v":0}');
+  });
+
   it('expired entries read as gone at once and are swept by the alarm', async () => {
     const store = oauthKv(env);
     const name = `pair:EXPR-${crypto.randomUUID().slice(0, 4)}`;
