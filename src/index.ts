@@ -6,9 +6,11 @@ import { armTokenUser, ARM_PROTOCOL, refuse } from './hub';
 import { addPage, homePage } from './guide';
 import { mcpHandler } from './mcp';
 import { pairApprove, pairPage, pairPoll, pairStart } from './pair';
+import { oauthKv } from './store';
 import { escapeHtml, favicon, json, page } from './util';
 
 export { UserHub } from './hub';
+export { OAuthStore } from './store';
 
 // /arm: the arm's outbound WebSocket. Browsers can't set headers on a WebSocket,
 // so the token rides as a subprotocol ("cbtoken.<token>"); Node arms may use Authorization.
@@ -84,7 +86,7 @@ const webHandler = {
   },
 };
 
-export default new OAuthProvider<Env>({
+const provider = new OAuthProvider<Env>({
   apiRoute: '/mcp',
   apiHandler: { fetch: mcpHandler as unknown as ExportedHandlerFetchHandler<Env> },
   defaultHandler: webHandler as unknown as ExportedHandler<Env>,
@@ -93,3 +95,13 @@ export default new OAuthProvider<Env>({
   clientRegistrationEndpoint: '/register',
   resourceMetadata: { resource: env.MCP_RESOURCE },
 });
+
+// Everything below the provider (the OAuth library, pairing, web sign-in) sees
+// OAUTH_KV as the Durable Object store: free KV takes only 1,000 writes a day for
+// the whole account, and anonymous requests used to spend them (src/store.ts).
+// Files reach the real KV through UserHub's own env.
+export default {
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return provider.fetch(request, { ...env, OAUTH_KV: oauthKv(env) }, ctx);
+  },
+} satisfies ExportedHandler<Env>;

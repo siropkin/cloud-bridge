@@ -15,12 +15,21 @@
     // How long a tools/call waits for the arm's answer.
     "ARM_CALL_TIMEOUT_MS": "120000"
   },
-  // wrangler dev simulates it locally; deploys use this namespace.
+  // wrangler dev simulates it locally; deploys use this namespace. Since S1 it holds
+  // only file blobs (and OAuth keys from before the move, until they're read once):
+  // the free plan gives it 1,000 writes a day for the whole account.
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "17fe14e95ad64871bd2417c565d2dcff" }],
   "durable_objects": {
-    "bindings": [{ "name": "USER_HUB", "class_name": "UserHub" }]
+    "bindings": [
+      { "name": "USER_HUB", "class_name": "UserHub" },
+      // OAuth state + pairing + web sign-in state (src/store.ts), behind the KV interface.
+      { "name": "OAUTH_STORE", "class_name": "OAuthStore" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserHub"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["UserHub"] },
+    { "tag": "v2", "new_sqlite_classes": ["OAuthStore"] }
+  ],
   // Errors only: per-request invocation logs would keep every request (sign-in
   // codes in URLs, bearer tokens) for 3 days, readable by the hub's operator.
   "observability": { "enabled": true, "logs": { "invocation_logs": false } },
