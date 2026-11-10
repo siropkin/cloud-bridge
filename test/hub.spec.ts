@@ -283,7 +283,7 @@ describe('MCP through OAuth to arms', () => {
     expect((await client.listTools()).tools.map((t) => t.name)).toEqual([...CHROME, 'fake_echo']);
     const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hi' } });
     expect(res.isError).toBe(true);
-    expect(text(res)).toMatch(/^No fake is online \(paired: birch, last seen \d+s ago\)\. Ask the user to run the fake arm, then call this tool again\.$/);
+    expect(text(res)).toMatch(/^No fake is online \(paired: birch, last seen \d+s ago\)\. It reconnects by itself within about a minute after the computer wakes up or its network comes back, so calling again in a minute may work\. If it doesn't: Ask the user to run the fake arm, then call this tool again\.$/);
   });
   it('an arm that drops mid-call or never answers fails the call with a check-state hint', async () => {
     const cookie = await cookieFor(newUser());
@@ -514,7 +514,7 @@ describe('heartbeats', () => {
     const res = await stub.callTool('fake_echo', { text: 'x' });
     expect(Date.now() - started).toBeLessThan(1000);
     // Last seen when it last pinged, not when the hub noticed (found live: a Chrome asleep all night read "7s ago").
-    expect(res.content[0].text).toMatch(/^No fake is online \(paired: birch, last seen 10 min ago\)\. Ask the user to run the fake arm, then call this tool again\.$/);
+    expect(res.content[0].text).toMatch(/^No fake is online \(paired: birch, last seen 10 min ago\)\. It reconnects by itself within about a minute after the computer wakes up or its network comes back, so calling again in a minute may work\. If it doesn't: Ask the user to run the fake arm, then call this tool again\.$/);
     expect((await arm.closed).code).toBe(4003);
   });
   it('a pinging socket stays online', async () => {

@@ -38,9 +38,13 @@ describe('resolveCall', () => {
     const r = resolveCall([arm({}), arm({ name: 'oak', id: 'oak', online: false })], 'chrome_snap', { x: '1' }, now);
     expect(r).toMatchObject({ ok: true, tool: 'snap', args: { x: '1' }, arm: { name: 'birch' } });
   });
-  it('names the start step when nothing is online', () => {
+  it('names the start step when nothing is online, after saying it may just be reconnecting (found live after a night of sleep)', () => {
     const r = resolveCall([arm({ online: false, lastSeen: now - 5 * 60_000 })], 'chrome', {}, now);
-    expect(r).toEqual({ ok: false, error: 'No chrome is online (paired: birch, last seen 5 min ago). Ask the user to open Chrome, then call this tool again.' });
+    expect(r).toEqual({
+      ok: false,
+      error:
+        "No chrome is online (paired: birch, last seen 5 min ago). It reconnects by itself within about a minute after the computer wakes up or its network comes back, so calling again in a minute may work. If it doesn't: Ask the user to open Chrome, then call this tool again.",
+    });
   });
   it('asks for the selector when several are online, and honours it case-insensitively', () => {
     const arms = [arm({ name: 'birch' }), arm({ name: 'oak', id: 'oak' })];
@@ -53,7 +57,9 @@ describe('resolveCall', () => {
     const arms = [arm({ name: 'birch' }), arm({ name: 'oak', id: 'oak', online: false, lastSeen: now - 3 * 3600_000 })];
     expect(resolveCall(arms, 'chrome', { profile: 'elm' }, now)).toMatchObject({ ok: false, error: 'No chrome named "elm". Online: birch. Pass profile as one of those names.' });
     const r = resolveCall(arms, 'chrome', { profile: 'oak' }, now);
-    expect(!r.ok && r.error).toContain('The chrome "oak" is offline (last seen 3 h ago). Online: birch.');
+    expect(!r.ok && r.error).toBe(
+      `The chrome "oak" is offline (last seen 3 h ago). Online: birch. It reconnects by itself within about a minute after the computer wakes up or its network comes back, so calling again in a minute may work. If it doesn't: Ask the user to open Chrome, or pass profile as one of the online names.`,
+    );
   });
   it('says which arm has a tool another arm lacks', () => {
     const r = resolveCall([arm({ name: 'birch', tools: [T('chrome')] }), arm({ name: 'oak', id: 'oak', online: false })], 'chrome_snap', {}, now);

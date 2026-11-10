@@ -104,6 +104,12 @@ function startHint(kind: string, arm: ArmInfo | undefined): string {
   return arm?.offlineHint ?? `Ask the user to start their ${kind} arm`;
 }
 
+// An offline arm is often one that is about to come back: the computer just woke
+// or its network returned, and arms redial by themselves. Without this the model
+// only had the person-facing fix, and sent the user to check settings that were
+// fine (found live with Claude.ai after a night's sleep, 2026-11-10).
+const REDIALS = 'It reconnects by itself within about a minute after the computer wakes up or its network comes back, so calling again in a minute may work.';
+
 export function resolveCall(arms: ArmInfo[], hubName: string, args: Record<string, unknown>, now = Date.now(), known: Record<string, KnownKind> = KNOWN_KINDS): Resolved {
   const kinds = byKind(arms);
   for (const [kind, k] of Object.entries(known)) {
@@ -123,14 +129,14 @@ export function resolveCall(arms: ArmInfo[], hubName: string, args: Record<strin
       if (!arm.online) {
         return {
           ok: false,
-          error: `The ${kind} "${arm.name}" is offline (${ago(arm.lastSeen, now)}). Online: ${onlineNames}. ${startHint(kind, arm)}, or pass ${selector} as one of the online names.`,
+          error: `The ${kind} "${arm.name}" is offline (${ago(arm.lastSeen, now)}). Online: ${onlineNames}. ${REDIALS} If it doesn't: ${startHint(kind, arm)}, or pass ${selector} as one of the online names.`,
         };
       }
     } else if (online.length === 1) {
       arm = online[0];
     } else if (online.length === 0) {
       const paired = group.map((a) => `${a.name}, ${ago(a.lastSeen, now)}`).join('; ');
-      return { ok: false, error: `No ${kind} is online (paired: ${paired}). ${startHint(kind, group[0])}, then call this tool again.` };
+      return { ok: false, error: `No ${kind} is online (paired: ${paired}). ${REDIALS} If it doesn't: ${startHint(kind, group[0])}, then call this tool again.` };
     } else {
       return { ok: false, error: `Several ${kind}s are online: ${onlineNames}. Pass ${selector} with one of those names (ask the user which one if it isn't clear).` };
     }
