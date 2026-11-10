@@ -564,6 +564,11 @@ describe('pages people read', () => {
     expect(await icon.text()).toContain('<svg');
     expect((await hub('/favicon.ico')).status).toBe(200);
   });
+  it('links stay readable in dark mode (the browser\'s default blue was near-invisible on the dark page, found live)', async () => {
+    const html = await (await hub('/')).text();
+    expect(html).toMatch(/<style>[^<]*\ba\{color:#6d28d9\}/);
+    expect(/@media\(prefers-color-scheme:dark\)\{[^<]*\ba\{color:#c4b5fd\}/.test(html)).toBe(true);
+  });
   it('the pinned CSP hash is the copy script\'s real hash', async () => {
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(COPY_SCRIPT.code));
     expect(btoa(String.fromCharCode(...new Uint8Array(digest)))).toBe(COPY_SCRIPT.hash);
