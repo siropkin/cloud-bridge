@@ -59,6 +59,11 @@ describe('auth surface', () => {
     expect(safeNext('/pair?code=ABCD-EFGH', at)).toBe('/pair?code=ABCD-EFGH');
     // Tabs/newlines are dropped by the URL parser: these resolved to https://evil.com/ (review finding).
     for (const bad of ['/\t/evil.com/x', '/\n/evil.com', '//evil.com', '/\\evil.com', 'https://evil.com', null]) expect(safeNext(bad, at)).toBe('/');
+    // Dot segments normalize to a "//evil.com" path, which /callback resolved as a host (S1).
+    for (const bad of ['/.//evil.com', '/./\\evil.com', '/a/..//evil.com', '/%2e//evil.com', '/..//evil.com/x?y=1']) {
+      const next = safeNext(bad, at);
+      expect(new URL(next, 'http://localhost:8787/callback').origin).toBe('http://localhost:8787');
+    }
   });
   it('a web-login callback without the state cookie is refused', async () => {
     const res = await hub('/login?next=/', { redirect: 'manual' });

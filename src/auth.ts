@@ -38,13 +38,15 @@ export async function readSession(request: Request, secret: string): Promise<Ses
 }
 
 // Same-origin path only. Prefix checks aren't enough: the URL parser drops tabs and
-// newlines, so "/\t/evil.com" resolves to https://evil.com/.
+// newlines, so "/\t/evil.com" resolves to https://evil.com/. And /callback resolves
+// the result again: dot segments ("/.//evil.com", "/a/..//evil.com") normalize to a
+// path "//evil.com", which that second parse reads as a host (S1).
 export function safeNext(next: string | null, requestUrl: string): string {
   if (!next?.startsWith('/')) return '/';
   try {
     const origin = new URL(requestUrl).origin;
     const u = new URL(next, origin);
-    return u.origin === origin ? u.pathname + u.search : '/';
+    return u.origin === origin && !u.pathname.startsWith('//') ? u.pathname + u.search : '/';
   } catch {
     return '/';
   }
