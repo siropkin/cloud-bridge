@@ -394,10 +394,11 @@ describe('MCP through OAuth to arms', () => {
 });
 
 const pages = async (...paths: string[]) => Promise.all(paths.map(async (p) => (await hub(p)).text()));
-// People never read "arm", "hub" or "MCP" on a page. Exceptions: the connector link
-// (it ends in /mcp) and ChatGPT's own button label, which they must find verbatim.
+// People never read "arm", "hub" or "MCP" on a page. Exceptions: what they copy
+// verbatim in <code> (the connector link ends in /mcp; Claude Code's command says
+// "mcp") and ChatGPT's own button label, which they must find verbatim.
 const plain = (html: string) =>
-  html.replace(/<script>[\s\S]*?<\/script>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/https?:\/\/\S+/g, ' ').replace('Add custom MCP server', ' ');
+  html.replace(/<script>[\s\S]*?<\/script>/g, ' ').replace(/<code>[\s\S]*?<\/code>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/https?:\/\/\S+/g, ' ').replace('Add custom MCP server', ' ');
 
 describe('signing out (off → on → off leaves at most one record: the arm revokes its old token)', () => {
   const revoke = (token: string) => hub('/arm/revoke', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });

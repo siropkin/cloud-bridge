@@ -23,6 +23,8 @@ const json = (body: unknown) => {
 };
 const signInPage = () =>
   page('Too many tries', '<p>Cloud Bridge got too many sign-in requests from your network in the last minute, so it paused them for a moment.</p><p>Wait a minute, then try again.</p>', { status: 429, headers: headers() });
+const accountPage = () =>
+  page('Too many tries', '<p>Cloud Bridge got too many requests for this page from your network in the last minute, so it paused them for a moment. Nothing changed.</p><p>Wait a minute, then <a href="/app">open your Cloud Bridge page</a> again.</p>', { status: 429, headers: headers() });
 
 export const LIMITED = {
   // RFC 7591 has no rate-limit error; temporarily_unavailable is the OAuth word for "try again later".
@@ -46,6 +48,13 @@ const RULES: Record<string, Rule> = {
   'POST /pair/poll': { binding: 'ARM_LIMIT', refuse: () => json(LIMITED.pairPoll) },
   'POST /arm/revoke': { binding: 'ARM_LIMIT', refuse: () => json(LIMITED.armRevoke) },
   'GET /arm': { binding: 'ARM_LIMIT', refuse: () => new Response(LIMITED.arm, { status: 429, headers: headers() }) },
+  // Signed in, but each view and change costs shared storage requests and writes
+  // (the account page lists grants and reads every app's record).
+  'GET /app': { binding: 'ARM_LIMIT', refuse: accountPage },
+  'POST /app/rename': { binding: 'ARM_LIMIT', refuse: accountPage },
+  'POST /app/disconnect': { binding: 'ARM_LIMIT', refuse: accountPage },
+  'POST /app/forget': { binding: 'ARM_LIMIT', refuse: accountPage },
+  'POST /app/delete': { binding: 'SIGNIN_LIMIT', refuse: accountPage },
 };
 
 // One host often holds a whole IPv6 /64, so it counts as one network; an

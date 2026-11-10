@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { buildToolList, resolveCall, type ArmInfo, type ArmTool, type HubTool } from './tools';
 import { randomToken, sha256, b64url } from './util';
 import { downloadPublic } from './download';
-import { FILE_MAX, FILES_PER_DAY, getFile, putFile, safeName, type FileMeta } from './files';
+import { deleteFiles, FILE_MAX, FILES_PER_DAY, getFile, putFile, safeName, type FileMeta } from './files';
 import { ARM_CONNECTS_PER_HOUR, CALLS_PER_DAY, CALLS_PER_MINUTE, DAY_MS, FILES_PER_DAY_ALL, HOUR_MS, MINUTE_MS, armConnectsText, callsPerDayText, callsPerMinuteText, filesTodayText } from './limits';
 import { takeQuota } from './store';
 
@@ -59,6 +59,17 @@ export type ActivityRow = {
   ms: number;
   error: string | null;
 };
+
+// One connected arm as the account page shows it (no token, no tools).
+export interface ArmDetails {
+  id: string;
+  kind: string;
+  name: string;
+  online: boolean;
+  lastSeen: number | null;
+  version: string | null;
+  createdAt: number;
+}
 
 type ArmRow = {
   id: string;
@@ -185,6 +196,56 @@ export class UserHub extends DurableObject<Env> {
     return this.arms().map(({ kind, name, online }) => ({ kind, name, online }));
   }
 
+  // The account page's list: what each connected arm is and whether it's there now.
+  async armDetails(): Promise<ArmDetails[]> {
+    if (!this.has()) return [];
+    const extra = new Map(this.sql.exec<{ id: string; version: string | null; created_at: number }>('SELECT id, version, created_at FROM arms').toArray().map((r) => [r.id, r]));
+    return this.arms().map(({ id, kind, name, online, lastSeen }) => ({ id, kind, name, online, lastSeen, version: extra.get(id)?.version ?? null, createdAt: extra.get(id)?.created_at ?? 0 }));
+  }
+
+  // The name AI apps pick it by (the tools' selector), so two of a kind can't share one
+  // after a rename: calls go to the first name that matches.
+  async renameArm(id: string, name: string): Promise<'ok' | 'gone' | 'taken'> {
+    if (!this.has()) return 'gone';
+    const row = this.sql.exec<{ kind: string }>('SELECT kind FROM arms WHERE id = ?', id).toArray()[0];
+    if (!row) return 'gone';
+    // In JS, as resolveCall compares: SQLite's lower() folds only A-Z ("Работа" vs "РАБОТА" passed).
+    const wanted = name.toLowerCase();
+    const clash = this.sql.exec<{ name: string }>('SELECT name FROM arms WHERE kind = ? AND id != ?', row.kind, id).toArray().some((r) => r.name.toLowerCase() === wanted);
+    if (clash) return 'taken';
+    this.sql.exec('UPDATE arms SET name = ? WHERE id = ?', name, id);
+    return 'ok';
+  }
+
+  // Disconnect from the account page: the record and its token go, the socket
+  // closes with 4401 so the arm stops redialing and tells its person.
+  async disconnectArm(id: string): Promise<boolean> {
+    if (!this.has() || !this.sql.exec('SELECT 1 FROM arms WHERE id = ?', id).toArray().length) return false;
+    this.dropArm(id, 'disconnected on the Cloud Bridge page');
+    return true;
+  }
+
+  // "Delete my data": every arm signed out (4401) and its calls failed, then all
+  // of this object's storage, then the files it kept in KV. The OAuth grants
+  // live in the store; the page revokes those first (src/app.ts).
+  async deleteEverything(userId: string): Promise<{ arms: number; files: number | null }> {
+    const arms = this.has() ? this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM arms').one().n : 0;
+    for (const ws of this.ctx.getWebSockets()) {
+      this.gone(ws, 'signed out of Cloud Bridge: the account was deleted');
+      try {
+        ws.close(UNPAIRED, 'signed out of Cloud Bridge: the account was deleted');
+      } catch {
+        // already closed
+      }
+    }
+    // Before and after: the failed calls' rows are recorded around this await, and
+    // a cached "tables exist" would send them into tables that are gone.
+    this.schema = false;
+    await this.ctx.storage.deleteAll();
+    this.schema = false;
+    return { arms, files: await deleteFiles(this.env.OAUTH_KV, userId) };
+  }
+
   // The /arm WebSocket upgrade, forwarded by the worker with the token in x-arm-token.
   async fetch(request: Request): Promise<Response> {
     const token = request.headers.get('x-arm-token') ?? '';
@@ -254,7 +315,7 @@ export class UserHub extends DurableObject<Env> {
   private gone(ws: WebSocket, why: string, seen = Date.now()): void {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att) return;
-    this.sql.exec('UPDATE arms SET last_seen = MAX(COALESCE(last_seen, 0), ?) WHERE id = ?', seen, att.armId);
+    if (this.has()) this.sql.exec('UPDATE arms SET last_seen = MAX(COALESCE(last_seen, 0), ?) WHERE id = ?', seen, att.armId);
     for (const [id, p] of this.pending) {
       if (p.connId !== att.connId) continue;
       this.pending.delete(id);
@@ -360,9 +421,11 @@ export class UserHub extends DurableObject<Env> {
     try {
       allowed = await takeQuota(this.env, `files:${Math.floor(now / DAY_MS)}`, FILES_PER_DAY_ALL, (Math.floor(now / DAY_MS) + 1) * DAY_MS);
     } catch (error) {
-      this.sql.exec('DELETE FROM files WHERE rowid = ?', reserved);
+      if (this.has()) this.sql.exec('DELETE FROM files WHERE rowid = ?', reserved);
       return refuse(`Cloud Bridge couldn't keep the file (${(error as Error).message}); try again, or run it without --out/--har`);
     }
+    // The account was deleted while the quota was checked: keep nothing for it.
+    if (!this.has()) return refuse('this Cloud Bridge account was just deleted, so nothing was kept');
     if (!allowed) {
       this.sql.exec('DELETE FROM files WHERE rowid = ?', reserved);
       return refuse(filesTodayText(now));
@@ -497,6 +560,8 @@ export class UserHub extends DurableObject<Env> {
 
   // Metadata only: never arguments or results (opt-in result storage is D2).
   private record(meta: CallMeta, armId: string | null, command: string, ok: boolean, ms: number, error: string | null): void {
+    // A call that waited on an arm while the account was deleted: nothing to keep.
+    if (armId && !this.has()) return;
     this.ensure(); // a signed-in user's call: their hub may keep rows now
     this.sql.exec(
       'INSERT INTO activity(ts, session, client, arm_id, command, ok, ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',

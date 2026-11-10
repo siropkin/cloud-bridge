@@ -49,7 +49,12 @@ export function addSteps(requestUrl: string, first: App = 'claude'): string {
   });
   return `<p>Your Cloud Bridge link:</p>
 <p class="link"><code>${link}</code> <button data-copy="${link}">Copy</button></p>
-${apps.join('\n')}`;
+${apps.join('\n')}
+<details><summary>Claude Code, Cursor and other apps</summary>
+<p><b>Claude Code</b>: in a terminal, run <code>claude mcp add --transport http cloud-bridge ${link}</code>, then type <code>/mcp</code> in Claude Code, choose cloud-bridge and sign in.</p>
+<p><b>Cursor</b>: add this to <code>~/.cursor/mcp.json</code>; Cursor asks you to sign in the first time it connects: <code>{"mcpServers":{"cloud-bridge":{"url":"${link}"}}}</code></p>
+<p>Any other app that can add a remote server with sign-in (OAuth) works with the link too.</p>
+</details>`;
 }
 
 export function homePage(request: Request): Response {
@@ -62,6 +67,7 @@ export function homePage(request: Request): Response {
 <li><b>Add Cloud Bridge to your AI app</b>:</li>
 </ol>
 ${addSteps(request.url)}
+<p>Already set up? <a href="/app">Your Cloud Bridge</a> shows your connected Chrome profiles and AI apps, and lets you remove them or delete your data.</p>
 <p class="note">Open source: <a href="https://github.com/siropkin/cloud-bridge">github.com/siropkin/cloud-bridge</a>.</p>`,
     { script: COPY_SCRIPT },
   );

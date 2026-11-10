@@ -95,6 +95,19 @@ describe('per-network limits on the routes anyone can call', () => {
         expect(await res.text()).toBe(LIMITED.arm);
       },
     },
+    // The account page: signed in, but each view lists grants and every change writes.
+    ...([['GET /app', 60, '/app', 'GET'], ['POST /app/rename', 60, '/app/rename', 'POST'], ['POST /app/disconnect', 60, '/app/disconnect', 'POST'], ['POST /app/forget', 60, '/app/forget', 'POST'], ['POST /app/delete', 10, '/app/delete', 'POST']] as const).map(([name, limit, path, method]) => ({
+      name: `${name} (the account page; nothing changes)`,
+      limit,
+      send: (ip: string) => hub(path, from(ip, { method, redirect: 'manual', ...(method === 'POST' ? { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'csrf=x' } : {}) })),
+      check: async (res: Response) => {
+        const html = await res.text();
+        expect(html).toContain('Too many tries');
+        expect(plain(html)).toContain('Nothing changed.');
+        expect(html).toContain('<a href="/app">open your Cloud Bridge page</a>');
+        expect(plain(html)).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b|\bpair/i);
+      },
+    })),
   ];
 
   for (const route of routes) {

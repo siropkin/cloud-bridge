@@ -59,6 +59,27 @@ export async function getFile(kv: KVNamespace, userId: string, id: string): Prom
   return { bytes: got.value, meta: got.metadata };
 }
 
+// Every file this account kept ("Delete my data"). null when KV wouldn't list
+// them (its free daily list budget is spent): they still expire within the hour.
+export async function deleteFiles(kv: KVNamespace, userId: string): Promise<number | null> {
+  let deleted = 0;
+  let cursor: string | undefined;
+  try {
+    do {
+      const page = await kv.list({ prefix: `file:${userId}:`, cursor });
+      for (const k of page.keys) {
+        await kv.delete(k.name);
+        deleted++;
+      }
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  } catch (error) {
+    console.error('files: deleting an account\'s files failed', (error as Error).message);
+    return null;
+  }
+  return deleted;
+}
+
 // Text a model can read as text; anything else goes back as a base64 blob.
 export function isText(mimeType: string): boolean {
   return /^text\/|[/+](json|xml)$|^application\/(javascript|x-ndjson)$/i.test(mimeType);

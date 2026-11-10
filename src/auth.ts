@@ -97,17 +97,26 @@ export async function login(request: Request, env: Env): Promise<Response> {
   return new Response(null, { status: 302, headers });
 }
 
-// POST only: a GET sign-out could be triggered by any page's <img>. And only from
-// the hub's own pages: another site's form POST cleared the cookie too (a
-// response's Set-Cookie applies whatever SameSite says) (S1).
-export function logout(request: Request): Response {
+// Only from the hub's own pages: another site's form POST would act with the
+// person's cookie (a response's Set-Cookie applies whatever SameSite says) (S1).
+export function sameOrigin(request: Request): boolean {
   const site = request.headers.get('Sec-Fetch-Site');
   const origin = request.headers.get('Origin');
-  if ((site && site !== 'same-origin' && site !== 'none') || (origin && origin !== new URL(request.url).origin)) {
+  return !((site && site !== 'same-origin' && site !== 'none') || (origin && origin !== new URL(request.url).origin));
+}
+
+export function clearSession(url: string): string {
+  return setCookie(SESSION, '', url, 0);
+}
+
+// POST only: a GET sign-out could be triggered by any page's <img>. And only from
+// the hub's own pages: another site's form POST cleared the cookie too (S1).
+export function logout(request: Request): Response {
+  if (!sameOrigin(request)) {
     return page('Still signed in', "<p>Signing out works from Cloud Bridge's own pages only, so nothing changed.</p>", { status: 403 });
   }
   const headers = new Headers({ Location: '/' });
-  headers.append('Set-Cookie', setCookie(SESSION, '', request.url, 0));
+  headers.append('Set-Cookie', clearSession(request.url));
   return new Response(null, { status: 303, headers });
 }
 

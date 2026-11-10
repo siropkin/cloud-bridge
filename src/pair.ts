@@ -188,6 +188,7 @@ function connected(request: Request, record: PairRecord): Response {
   return page(
     `${armLabel(record.kind, record.name)} is connected`,
     `<p><strong>Already added Cloud Bridge to Claude or ChatGPT? You're done: you can close this tab.</strong></p>
+<p class="note">See or remove what's connected any time on <a href="/app">your Cloud Bridge page</a>.</p>
 <h2>Next: add Cloud Bridge to your AI app</h2>
 ${addSteps(request.url)}`,
     { script: COPY_SCRIPT, icon: '✅' },

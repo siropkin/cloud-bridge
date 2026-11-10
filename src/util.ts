@@ -90,7 +90,12 @@ a.button{display:inline-block;text-decoration:none;font-weight:600;padding:.45re
 .link{display:flex;gap:.5rem;align-items:center;margin:.5rem 0}.link code{user-select:all;word-break:break-all}
 section{border:1px solid #ddd6fe;border-radius:.6rem;padding:.2rem 1rem 1rem;margin:1rem 0}ol{padding-left:1.3rem}li{margin:.25rem 0}
 .warn{border-left:4px solid #dc2626;background:#fef2f2;padding:.5rem .8rem;border-radius:.3rem}
-@media(prefers-color-scheme:dark){body{background:#16131f;color:#eee}a{color:#c4b5fd}button.secondary{background:#16131f}code{background:#2a2340}.note{color:#aaa}a.button{color:#c4b5fd;border-color:#a78bfa}section{border-color:#3b2f5c}.warn{background:#3a1518}}</style>
+.ok{border-left:4px solid #16a34a;background:#f0fdf4;padding:.5rem .8rem;border-radius:.3rem}
+button.danger{background:#dc2626;border-color:#dc2626}input{font:inherit;padding:.4rem .5rem;border:1px solid #c4b5fd;border-radius:.4rem;min-width:0;flex:1}
+.item{border-top:1px solid #ede9fe;padding:.4rem 0}.item:first-of-type{border-top:0}.item p{margin:.3rem 0}form.row{display:flex;gap:.5rem;align-items:center;margin:.4rem 0}
+.dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;margin-right:.45rem;background:#9ca3af}.dot.on{background:#16a34a}
+details{margin:1rem 0}summary{cursor:pointer;color:#7c3aed}
+@media(prefers-color-scheme:dark){body{background:#16131f;color:#eee}a{color:#c4b5fd}button.secondary{background:#16131f}code{background:#2a2340}.note{color:#aaa}a.button{color:#c4b5fd;border-color:#a78bfa}section{border-color:#3b2f5c}.warn{background:#3a1518}.ok{background:#11301c}input{background:#16131f;color:#eee;border-color:#3b2f5c}.item{border-color:#3b2f5c}summary{color:#c4b5fd}}</style>
 <h1>${init.icon ?? '🟣'} ${escapeHtml(title)}</h1>${body}${init.script ? `<script>${init.script.code}</script>` : ''}</html>`;
   return new Response(html, { status: init.status ?? 200, headers });
 }
