@@ -114,6 +114,10 @@ export class UserHub extends DurableObject<Env> {
       target_host TEXT, ok INTEGER NOT NULL, ms INTEGER NOT NULL, error TEXT, result_ref TEXT)`);
     // When files were kept (the bytes live in KV): the daily cap counts these.
     this.sql.exec('CREATE TABLE IF NOT EXISTS files(ts INTEGER NOT NULL, size INTEGER NOT NULL)');
+    // Whose hub this is: ctx.id.name when the caller used idFromName (every caller
+    // here does), kept for wakes that may lack it (a hibernated socket's message).
+    this.sql.exec('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    if (ctx.id.name) this.sql.exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('user', ?)", ctx.id.name);
     // Heartbeats are answered without waking the object (no free-tier request spent).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
@@ -278,7 +282,9 @@ export class UserHub extends DurableObject<Env> {
       }
     };
     const refuse = (message: string) => answer({ error: { code: -32000, message } });
-    if (!att.userId) return refuse('this connection predates file links: reconnect (switch Cloud AI apps off and on) and try again');
+    // Sockets accepted before userId rode the attachment survive a deploy (found live).
+    const userId = att.userId ?? this.ctx.id.name ?? this.sql.exec<{ value: string }>("SELECT value FROM meta WHERE key = 'user'").toArray()[0]?.value;
+    if (!userId) return refuse("Cloud Bridge couldn't tell whose file this is, so nothing was kept; run the command without --out/--har (the result comes back inline), or try again in a minute");
     let bytes: Uint8Array;
     if (typeof params.text === 'string') bytes = new TextEncoder().encode(params.text);
     else if (typeof params.data === 'string') {
@@ -297,7 +303,7 @@ export class UserHub extends DurableObject<Env> {
     this.sql.exec('INSERT INTO files(ts, size) VALUES (?, ?)', now, bytes.length);
     const mimeType = typeof params.mimeType === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(params.mimeType) ? params.mimeType : 'application/octet-stream';
     try {
-      const file = await putFile(this.env.OAUTH_KV, att.userId, new URL(this.env.MCP_RESOURCE).origin, safeName(params.name), mimeType, bytes, now);
+      const file = await putFile(this.env.OAUTH_KV, userId, new URL(this.env.MCP_RESOURCE).origin, safeName(params.name), mimeType, bytes, now);
       answer({ result: { ...file, expiresAt: new Date(file.expires).toISOString() } });
     } catch (error) {
       refuse(`Cloud Bridge couldn't keep the file (${(error as Error).message}); try again, or run it without --out/--har`);

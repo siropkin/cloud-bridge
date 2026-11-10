@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { FILE_MAX, FILES_PER_DAY, getFile, parseFileUrl, putFile, safeName } from '../src/files';
 import indexSrc from '../src/index.ts?raw';
@@ -70,6 +71,24 @@ describe('arm/file (fetch --out, net --har through the cloud)', () => {
     expect((await keep({ name: 'x', data: '***' })).error.message).toBe('data must be base64');
     const big = await keep({ name: 'big.bin', data: 'A'.repeat(Math.ceil(FILE_MAX / 3) * 4 + 8) });
     expect(big.error.message).toBe('the file is over 10 MB — Cloud Bridge keeps files up to 10 MB');
+    arm.ws.close();
+  });
+
+  it('keeps files for a socket accepted before userId rode its attachment (they survive a deploy; found live)', async () => {
+    const user = newUser();
+    const cookie = await cookieFor(user);
+    const { arm, keep } = await armOf(cookie);
+    const stub = env.USER_HUB.get(env.USER_HUB.idFromName(user.uid));
+    await runInDurableObject(stub, (_: unknown, state) => {
+      for (const ws of state.getWebSockets()) {
+        const { userId, ...old } = ws.deserializeAttachment() as Record<string, unknown>;
+        ws.serializeAttachment(old);
+      }
+    });
+    const res = await keep({ name: 'late.txt', text: 'hi' });
+    expect(res.error).toBeUndefined();
+    const got = await hub(new URL(res.result.url).pathname, { headers: { Cookie: cookie } });
+    expect(await got.text()).toBe('hi');
     arm.ws.close();
   });
 
