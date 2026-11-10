@@ -2,6 +2,7 @@ import { requireSession, type HubEnv } from './auth';
 import { validArm } from './hub';
 import { addSteps, COPY_SCRIPT } from './guide';
 import { armLabel, codeWhere, connectWhere } from './kinds';
+import { swapText } from './store';
 import { escapeHtml, json, page, randomToken, sha256, sign, verify } from './util';
 
 // Device-code pairing, any arm kind:
@@ -15,7 +16,9 @@ interface PairRecord {
   kind: string;
   name: string;
   pollHash: string;
-  status: 'pending' | 'approved' | 'denied';
+  // approving: claimed by one Connect click while its arm record is made.
+  status: 'pending' | 'approving' | 'approved' | 'denied';
+  by?: string; // the hub user who clicked Connect
   armToken?: string;
   expires: number;
 }
@@ -59,7 +62,7 @@ export async function pairPoll(request: Request, env: Env): Promise<Response> {
   if (!record || record.expires < Date.now() || typeof pollToken !== 'string' || record.pollHash !== (await sha256(pollToken))) {
     return json({ status: 'expired', message: 'This pairing code expired or is unknown. Start pairing again (POST /pair/start).' }, 404);
   }
-  if (record.status === 'pending') return json({ status: 'pending', message: 'Waiting for the user to approve at the verification URL.' });
+  if (record.status === 'pending' || record.status === 'approving') return json({ status: 'pending', message: 'Waiting for the user to approve at the verification URL.' });
   await env.OAUTH_KV.delete(key(code));
   if (record.status === 'denied') return json({ status: 'denied', message: 'The user denied this pairing. Start again only if they ask you to.' }, 403);
   const armUrl = new URL('/arm', request.url);
@@ -98,17 +101,39 @@ export async function pairApprove(request: Request, env: HubEnv): Promise<Respon
   if (!(await verify(`pair|${session.uid}|${code}`, String(form.get('csrf') ?? ''), env.COOKIE_ENCRYPTION_KEY))) {
     return page('Not connected', '<p>This page is out of date or came from another site, so nothing was connected. Start again from the chrome-bridge popup (⚙ Settings → Cloud AI apps).</p>', { status: 403 });
   }
-  const record = await env.OAUTH_KV.get<PairRecord>(key(code), 'json');
-  if (!record || record.status !== 'pending' || record.expires < Date.now()) return expired();
+  const raw = await env.OAUTH_KV.get(key(code));
+  const record = raw === null ? null : (JSON.parse(raw) as PairRecord);
+  if (!record || record.expires < Date.now()) return expired();
+  // A double-click submits twice, and the second answer is the one on screen.
+  if (record.by === session.uid && (record.status === 'approving' || record.status === 'approved')) return connected(request, record);
+  if (record.status !== 'pending' || raw === null) return expired();
   const ttl = Math.max(60, Math.ceil((record.expires - Date.now()) / 1000));
   if (form.get('decision') !== 'approve') {
-    await env.OAUTH_KV.put(key(code), JSON.stringify({ ...record, status: 'denied' }), { expirationTtl: ttl });
+    if (!(await swapText(env, key(code), raw, JSON.stringify({ ...record, status: 'denied' }), ttl))) return expired();
     return page('Not connected', '<p>Nothing was connected. You can close this tab.</p>');
   }
+  // Claimed before the arm record exists: two approvals that both read "pending"
+  // made two records, and the one whose token was overwritten stayed offline in
+  // every AI app's list for good (S1).
+  const claimed = JSON.stringify({ ...record, status: 'approving', by: session.uid });
+  if (!(await swapText(env, key(code), raw, claimed, ttl))) {
+    const now = await env.OAUTH_KV.get<PairRecord>(key(code), 'json');
+    return now?.by === session.uid && (now.status === 'approving' || now.status === 'approved') ? connected(request, now) : expired();
+  }
   const hub = env.USER_HUB.get(env.USER_HUB.idFromName(session.uid));
-  const { token } = await hub.createArm(session.uid, record.kind, record.name);
-  await env.OAUTH_KV.put(key(code), JSON.stringify({ ...record, status: 'approved', armToken: token }), { expirationTtl: ttl });
-  // Not a dead end: the next step is adding Cloud Bridge to an AI app.
+  let token: string;
+  try {
+    ({ token } = await hub.createArm(session.uid, record.kind, record.name));
+  } catch (error) {
+    await swapText(env, key(code), claimed, raw, ttl); // back to pending: Connect again works
+    throw error;
+  }
+  await env.OAUTH_KV.put(key(code), JSON.stringify({ ...record, status: 'approved', by: session.uid, armToken: token }), { expirationTtl: ttl });
+  return connected(request, record);
+}
+
+// Not a dead end: the next step is adding Cloud Bridge to an AI app.
+function connected(request: Request, record: PairRecord): Response {
   return page(
     `${armLabel(record.kind, record.name)} is connected`,
     `<p><strong>Already added Cloud Bridge to Claude or ChatGPT? You're done: you can close this tab.</strong></p>

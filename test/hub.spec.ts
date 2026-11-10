@@ -128,6 +128,24 @@ describe('pairing', () => {
     expect(done.armToken).toMatch(/^cba_/);
     expect((await poll()).status).toBe(404);
   });
+  it('a double-clicked Connect makes one record, and both clicks see it connected (S1: the second record stayed offline for good)', async () => {
+    const user = newUser();
+    const cookie = await cookieFor(user);
+    const start = (await (await hub('/pair/start', { method: 'POST', body: JSON.stringify({ kind: 'fake', name: 'birch' }) })).json()) as any;
+    const html = await (await hub(`/pair?code=${start.code}`, { headers: { Cookie: cookie } })).text();
+    const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1];
+    const click = () => hub('/pair/approve', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code: start.code, csrf, decision: 'approve' }) });
+    const answers = await Promise.all([click(), click(), click()]);
+    for (const a of answers) {
+      expect(a.status).toBe(200);
+      expect(await a.text()).toContain('Fake “birch” is connected');
+    }
+    expect(await env.USER_HUB.get(env.USER_HUB.idFromName(user.uid)).armSummary()).toHaveLength(1);
+    const poll = (await (await hub('/pair/poll', { method: 'POST', body: JSON.stringify({ code: start.code, pollToken: start.pollToken }) })).json()) as any;
+    const arm = await connectArm(poll.armToken, { name: 'birch', tools: [ECHO] });
+    await arm.ready;
+    arm.ws.close();
+  });
   it('a denied pairing tells the arm', async () => {
     const cookie = await cookieFor(newUser());
     const start = (await (await hub('/pair/start', { method: 'POST', body: JSON.stringify({ kind: 'fake', name: 'oak' }) })).json()) as any;

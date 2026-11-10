@@ -83,6 +83,15 @@ export class OAuthStore extends DurableObject<Env> {
     return this.sql.exec('DELETE FROM kv WHERE name = ?', name).rowsWritten > 0;
   }
 
+  // Compare-and-set for the hub's own records: an object runs one call at a time
+  // (storage awaits hold its input gate), so no other request lands in between,
+  // where KV's get-then-put let two approvals of one pairing both see "pending".
+  async swap(name: string, expected: string, value: string, expires: number | null): Promise<boolean> {
+    if ((await this.get(name))?.value !== expected) return false;
+    await this.put(name, value, null, expires);
+    return true;
+  }
+
   // Names after `after`, in order, up to `limit`.
   async list(prefix: string, limit: number, after: string, now = Date.now()): Promise<Listed[]> {
     if (!this.has()) return [];
@@ -178,4 +187,10 @@ export function oauthKv(env: Env): KVNamespace {
     },
   };
   return store as unknown as KVNamespace;
+}
+
+// The hub's own compare-and-set (pairing approval): true when `name` held exactly
+// `expected` and now holds `value`.
+export function swapText(env: Env, name: string, expected: string, value: string, expirationTtl: number): Promise<boolean> {
+  return env.OAUTH_STORE.get(env.OAUTH_STORE.idFromName(shardOf(name))).swap(name, expected, value, Date.now() + expirationTtl * 1000);
 }
