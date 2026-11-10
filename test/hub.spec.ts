@@ -38,6 +38,16 @@ describe('auth surface', () => {
     expect(res.status).toBe(303);
     expect(res.headers.getSetCookie().join()).toMatch(/cb_session=; .*Max-Age=0/);
   });
+  it('another site cannot sign you out with a form post (S1)', async () => {
+    const cookie = await cookieFor(newUser());
+    for (const headers of [{ 'Sec-Fetch-Site': 'cross-site' }, { Origin: 'https://evil.example' }, { 'Sec-Fetch-Site': 'same-site', Origin: 'https://other.workers.dev' }] as Record<string, string>[]) {
+      const res = await hub('/logout', { method: 'POST', headers: { Cookie: cookie, ...headers }, redirect: 'manual' });
+      expect(res.status).toBe(403);
+      expect(res.headers.getSetCookie()).toEqual([]);
+    }
+    const own = await hub('/logout', { method: 'POST', headers: { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin', Origin: ORIGIN }, redirect: 'manual' });
+    expect(own.status).toBe(303);
+  });
   it('without a session, an approved MCP consent goes to GitHub with a browser-bound state', async () => {
     const reg = (await (await hub('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ redirect_uris: ['http://127.0.0.1:9999/cb'], client_name: 'Upstream', token_endpoint_auth_method: 'none' }) })).json()) as any;
     const q = new URLSearchParams({ response_type: 'code', client_id: reg.client_id, redirect_uri: 'http://127.0.0.1:9999/cb', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', resource: env.MCP_RESOURCE });
