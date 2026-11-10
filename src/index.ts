@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import OAuthProvider from '@cloudflare/workers-oauth-provider';
-import { authorize, callback, login, logout, type HubEnv } from './auth';
+import { authorize, callback, login, logout, requireSession, type HubEnv } from './auth';
+import { fileResponse } from './files';
 import { armTokenUser, ARM_PROTOCOL, refuse } from './hub';
 import { addPage, homePage } from './guide';
 import { mcpHandler } from './mcp';
@@ -36,6 +37,21 @@ async function revoke(request: Request, env: HubEnv): Promise<Response> {
   return json({ ok: true, revoked });
 }
 
+// GET /files/<id>/<name>: a file an arm saved (fetch --out, net --har). It can
+// hold cookies and tokens, so the link opens only after sign-in, for the account
+// that made it; anyone else gets the same "expired" page as a stale link.
+async function file(request: Request, env: HubEnv, id: string): Promise<Response> {
+  const session = await requireSession(request, env);
+  if (session instanceof Response) return session;
+  const found = await env.USER_HUB.get(env.USER_HUB.idFromName(session.uid)).readFile(session.uid, id);
+  if (found) return fileResponse(found.bytes, found.meta);
+  return page(
+    'This download link has expired',
+    `<p>Files from Cloud Bridge last an hour and open only for the GitHub account that made them (you're signed in as <strong>@${escapeHtml(session.login)}</strong>).</p><p>Ask your AI app to run the command again for a new link.</p>`,
+    { status: 404 },
+  );
+}
+
 async function route(request: Request, env: HubEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
   const m = request.method;
@@ -52,6 +68,8 @@ async function route(request: Request, env: HubEnv): Promise<Response> {
   if (pathname === '/pair/approve' && m === 'POST') return pairApprove(request, env);
   if (pathname === '/arm/revoke' && m === 'POST') return revoke(request, env);
   if (pathname === '/arm') return arm(request, env);
+  const f = /^\/files\/([^/]+)\/[^/]*$/.exec(pathname);
+  if (f && m === 'GET') return file(request, env, f[1]);
   return new Response('Not found', { status: 404 });
 }
 

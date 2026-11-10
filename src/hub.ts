@@ -2,12 +2,14 @@ import { DurableObject } from 'cloudflare:workers';
 import { buildToolList, resolveCall, type ArmInfo, type ArmTool, type HubTool } from './tools';
 import { randomToken, sha256, b64url } from './util';
 import { downloadPublic } from './download';
+import { FILE_MAX, FILES_PER_DAY, getFile, putFile, safeName, type FileMeta } from './files';
 
 export const ARM_PROTOCOL = 'cloud-bridge.v1';
 const ARM_KINDS = /^[a-z][a-z0-9-]{0,23}$/;
 
 interface Attachment {
   armId: string;
+  userId?: string; // whose hub this is (absent on sockets from before it existed)
   // One per socket: a replaced connection's late close must not fail calls on its successor.
   connId: string;
   ready: boolean; // hello received and tools listed
@@ -110,6 +112,8 @@ export class UserHub extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS activity(
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, session TEXT, client TEXT, arm_id TEXT, command TEXT NOT NULL,
       target_host TEXT, ok INTEGER NOT NULL, ms INTEGER NOT NULL, error TEXT, result_ref TEXT)`);
+    // When files were kept (the bytes live in KV): the daily cap counts these.
+    this.sql.exec('CREATE TABLE IF NOT EXISTS files(ts INTEGER NOT NULL, size INTEGER NOT NULL)');
     // Heartbeats are answered without waking the object (no free-tier request spent).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
@@ -159,7 +163,7 @@ export class UserHub extends DurableObject<Env> {
     for (const old of this.ctx.getWebSockets(row.id)) old.close(4000, 'replaced by a newer connection of the same arm');
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, [row.id]);
-    server.serializeAttachment({ armId: row.id, connId: crypto.randomUUID(), ready: false, since: Date.now() } satisfies Attachment);
+    server.serializeAttachment({ armId: row.id, userId: armTokenUser(token) ?? undefined, connId: crypto.randomUUID(), ready: false, since: Date.now() } satisfies Attachment);
     this.sql.exec('UPDATE arms SET last_seen = ? WHERE id = ?', Date.now(), row.id);
     const headers = new Headers();
     if (request.headers.get('Sec-WebSocket-Protocol')) headers.set('Sec-WebSocket-Protocol', ARM_PROTOCOL);
@@ -177,6 +181,7 @@ export class UserHub extends DurableObject<Env> {
     }
     if (msg.method === 'arm/hello') return this.hello(ws, att, msg.params ?? {});
     if (msg.method === 'arm/download' && msg.id !== undefined) return this.download(ws, msg.id, msg.params ?? {});
+    if (msg.method === 'arm/file' && msg.id !== undefined) return this.keepFile(ws, att, msg.id, msg.params ?? {});
     if (msg.id !== undefined && !msg.method) {
       const p = this.pending.get(String(msg.id));
       if (!p) return;
@@ -260,6 +265,51 @@ export class UserHub extends DurableObject<Env> {
     } finally {
       this.downloads--;
     }
+  }
+
+  // An arm hands over a file it made for the user (chrome-bridge's fetch --out,
+  // net --har): kept an hour, answered with a link only this account can open.
+  private async keepFile(ws: WebSocket, att: Attachment, id: string | number, params: Record<string, unknown>): Promise<void> {
+    const answer = (body: Record<string, unknown>) => {
+      try {
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id, ...body }));
+      } catch {
+        // the arm went away; nothing to tell
+      }
+    };
+    const refuse = (message: string) => answer({ error: { code: -32000, message } });
+    if (!att.userId) return refuse('this connection predates file links: reconnect (switch Cloud AI apps off and on) and try again');
+    let bytes: Uint8Array;
+    if (typeof params.text === 'string') bytes = new TextEncoder().encode(params.text);
+    else if (typeof params.data === 'string') {
+      if (params.data.length > Math.ceil(FILE_MAX / 3) * 4 + 4) return refuse(`the file is over ${FILE_MAX / 1048576} MB — Cloud Bridge keeps files up to ${FILE_MAX / 1048576} MB`);
+      try {
+        bytes = Uint8Array.from(atob(params.data), (c) => c.charCodeAt(0));
+      } catch {
+        return refuse('data must be base64');
+      }
+    } else return refuse('send the file as text or as base64 data');
+    if (bytes.length > FILE_MAX) return refuse(`the file is ${(bytes.length / 1048576).toFixed(1)} MB — Cloud Bridge keeps files up to ${FILE_MAX / 1048576} MB`);
+    const now = Date.now();
+    this.sql.exec('DELETE FROM files WHERE ts < ?', now - 86400_000);
+    const kept = this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM files').one().n;
+    if (kept >= FILES_PER_DAY) return refuse(`Cloud Bridge already kept ${FILES_PER_DAY} files for this account in the last 24 hours; the result itself still comes back without --out/--har`);
+    this.sql.exec('INSERT INTO files(ts, size) VALUES (?, ?)', now, bytes.length);
+    const mimeType = typeof params.mimeType === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(params.mimeType) ? params.mimeType : 'application/octet-stream';
+    try {
+      const file = await putFile(this.env.OAUTH_KV, att.userId, new URL(this.env.MCP_RESOURCE).origin, safeName(params.name), mimeType, bytes, now);
+      answer({ result: { ...file, expiresAt: new Date(file.expires).toISOString() } });
+    } catch (error) {
+      refuse(`Cloud Bridge couldn't keep the file (${(error as Error).message}); try again, or run it without --out/--har`);
+    }
+  }
+
+  // Reads go through here, never straight from the Worker: KV shows a write at
+  // once only in the location that made it (this object's), while elsewhere a
+  // fresh key can read as missing for a minute — an AI app's resources/read
+  // right after the command would have been told the link expired (review).
+  async readFile(userId: string, id: string): Promise<{ bytes: ArrayBuffer; meta: FileMeta } | null> {
+    return getFile(this.env.OAUTH_KV, userId, id);
   }
 
   private request(ws: WebSocket, connId: string, method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {

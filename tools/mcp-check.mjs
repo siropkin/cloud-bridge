@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Scripted MCP client: the MCP Inspector's checks without its UI. Runs the real
 // OAuth 2.1 flow (dynamic registration, PKCE, loopback callback), then lists
-// the hub's tools and optionally calls one.
+// the hub's tools and resources, and optionally calls tools and reads resources.
 //
-//   node tools/mcp-check.mjs [--hub http://localhost:8787] [--call <tool> '<json args>']... [--open "<cmd>"]
+//   node tools/mcp-check.mjs [--hub http://localhost:8787] [--call <tool> '<json args>']... [--read <uri|link>]... [--open "<cmd>"]
 //
-// --call repeats: the calls run in order over one session (one sign-in).
+// --call and --read repeat: they run in order over one session (one sign-in).
+// --read link reads the file link the previous --call returned (fetch --out, net --har).
 //
 // It prints the authorization URL; open it in the browser that is signed in to
 // the hub (--open runs a command with the URL appended, e.g. chrome-bridge's
@@ -22,7 +23,7 @@ const opt = (name) => {
 const HUB = (opt('hub') ?? 'http://localhost:8787').replace(/\/$/, '');
 const PORT = 8790;
 const REDIRECT = `http://127.0.0.1:${PORT}/callback`;
-const CALLS = args.flatMap((a, i) => (a === '--call' ? [{ name: args[i + 1], arguments: JSON.parse(args[i + 2] ?? '{}') }] : []));
+const STEPS = args.flatMap((a, i) => (a === '--call' ? [{ name: args[i + 1], arguments: JSON.parse(args[i + 2] ?? '{}') }] : a === '--read' ? [{ read: args[i + 1] }] : []));
 
 const store = {};
 const provider = {
@@ -90,9 +91,21 @@ for (const t of tools) {
   const hints = Object.entries(t.annotations ?? {}).filter(([k, v]) => k.endsWith('Hint') && v).map(([k]) => k.replace('Hint', ''));
   console.log(`  ${t.name} — ${t.title ?? ''} (${Object.keys(t.inputSchema?.properties ?? {}).map((k) => k + (req.has(k) ? '*' : '')).join(', ')}) [${hints.join(', ') || 'no hints'}]`);
 }
-for (const call of CALLS) {
-  const res = await client.callTool(call);
+const { resources } = await client.listResources();
+console.log(`resources/list: ${resources.length} resources`);
+for (const r of resources) console.log(`  ${r.uri} — ${r.title ?? r.name} (${r.mimeType}, ${r.size ?? '?'} bytes)`);
+let lastLink;
+for (const step of STEPS) {
+  if (step.read) {
+    const uri = step.read === 'link' ? lastLink : step.read;
+    if (!uri) throw new Error('--read link: the previous --call returned no resource_link');
+    const { contents } = await client.readResource({ uri });
+    console.log(`resources/read ${uri}:`, JSON.stringify(contents.map((c) => ({ uri: c.uri, mimeType: c.mimeType, ...(c.text !== undefined ? { chars: c.text.length, head: c.text.slice(0, 120) } : { blobBytes: Math.round((c.blob?.length ?? 0) * 0.75) }) }))));
+    continue;
+  }
+  const res = await client.callTool(step);
+  lastLink = res.content?.findLast?.((c) => c.type === 'resource_link')?.uri ?? lastLink;
   const shown = { ...res, content: res.content?.map((c) => (c.type === 'image' ? { type: 'image', mimeType: c.mimeType, bytes: Math.round((c.data?.length ?? 0) * 0.75) } : c)) };
-  console.log(`tools/call ${call.name}:`, JSON.stringify(shown));
+  console.log(`tools/call ${step.name}:`, JSON.stringify(shown));
 }
 await client.close();

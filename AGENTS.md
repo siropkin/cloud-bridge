@@ -13,7 +13,7 @@ The hub of Cloud Bridge. Arms (first: the [chrome-bridge](https://github.com/sir
 
 - Product bar: an AI-first, open-source tool that anyone — not only IT people — can set up and use, and that AI agents love to use. Pages a person sees speak plain words with one obvious next action (no "arm", "hub", "pair", "MCP": `test/hub.spec.ts` checks the pages); everything a model reads names the next step.
 - Server `instructions` and tool descriptions are descriptive, never orders to the model: Claude read "tell the user exactly…" as a possible prompt injection.
-- `src/chrome-tools.json` is generated: never edit it by hand. After chrome-bridge changes its `TOOLS` (in `extension/commands.js`), run `npm run sync-chrome-tools` (expects `../chrome-bridge`, or pass the path); `npm test` checks it first.
+- `src/chrome-tools.json` and `src/chrome-docs.json` are generated: never edit them by hand. After chrome-bridge changes its `TOOLS` (in `extension/commands.js`) or its skill docs (`.claude/skills/chrome-bridge/`), run `npm run sync-chrome-tools` (expects `../chrome-bridge`, or pass the path); `npm test` checks it first.
 - Gates before pushing: `npm test`, `npm run type-check`, `npx wrangler deploy --dry-run`. A protocol or auth change also gets a live run: `npm run dev` + `npm run fake-arm` + `node tools/mcp-check.mjs --call fake_echo '{"text":"hi"}'`.
 - Fetch current docs before touching Cloudflare, `@cloudflare/workers-oauth-provider` (its `docs/` folder in node_modules is current), `agents` or the MCP SDK: these move fast. After a `wrangler.jsonc` change run `npm run cf-typegen` and commit `worker-configuration.d.ts`.
 - The hub stays arm-agnostic: it never parses an arm's commands. Arms describe themselves (`arm/hello`, `tools/list`).
