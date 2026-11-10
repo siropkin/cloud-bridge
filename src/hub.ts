@@ -106,6 +106,21 @@ export class UserHub extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    // Heartbeats are answered without waking the object (no free-tier request spent).
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+  }
+
+  // Tables appear with this user's first real write (a pairing, a call), never on
+  // a bare wake: the worker picks the object by a user id anyone can put in a
+  // token, and a schema per forged request wrote rows and kept storage forever (S1).
+  private schema = false;
+  private has(): boolean {
+    if (!this.schema && this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arms'").toArray().length) this.ensure();
+    return this.schema;
+  }
+
+  private ensure(): void {
+    if (this.schema) return;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS arms(
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, version TEXT, token_hash TEXT NOT NULL UNIQUE,
       created_at INTEGER NOT NULL, last_seen INTEGER, tools TEXT, selector TEXT, offline_hint TEXT)`);
@@ -117,15 +132,15 @@ export class UserHub extends DurableObject<Env> {
     // Whose hub this is: ctx.id.name when the caller used idFromName (every caller
     // here does), kept for wakes that may lack it (a hibernated socket's message).
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    if (ctx.id.name) this.sql.exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('user', ?)", ctx.id.name);
-    // Heartbeats are answered without waking the object (no free-tier request spent).
-    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+    if (this.ctx.id.name) this.sql.exec("INSERT OR IGNORE INTO meta(key, value) VALUES ('user', ?)", this.ctx.id.name);
+    this.schema = true;
   }
 
   // No replacing by name: chrome-bridge profile names come from 20 words, so two
   // profiles can share one (review). An arm that re-pairs revokes its old token
   // itself (POST /arm/revoke), retrying until the hub answers.
   async createArm(userId: string, kind: string, name: string): Promise<{ armId: string; token: string }> {
+    this.ensure();
     const armId = crypto.randomUUID();
     const token = `cba_${b64url(new TextEncoder().encode(userId))}.${randomToken(32)}`;
     this.sql.exec('INSERT INTO arms(id, kind, name, token_hash, created_at) VALUES (?, ?, ?, ?, ?)', armId, kind, name.trim(), await sha256(token), Date.now());
@@ -135,6 +150,7 @@ export class UserHub extends DurableObject<Env> {
   // The arm signs itself out (Cloud AI apps switched off, extension removed):
   // its record goes, so AI apps stop seeing it. Idempotent.
   async revokeArm(token: string): Promise<boolean> {
+    if (!this.has()) return false;
     const row = this.sql.exec<{ id: string }>('SELECT id FROM arms WHERE token_hash = ?', await sha256(token)).toArray()[0];
     if (!row) return false;
     this.dropArm(row.id, 'signed out of Cloud Bridge');
@@ -162,6 +178,7 @@ export class UserHub extends DurableObject<Env> {
   // The /arm WebSocket upgrade, forwarded by the worker with the token in x-arm-token.
   async fetch(request: Request): Promise<Response> {
     const token = request.headers.get('x-arm-token') ?? '';
+    if (!this.has()) return refuse(request, 'unknown or revoked arm token: pair this arm again');
     const row = this.sql.exec<ArmRow>('SELECT * FROM arms WHERE token_hash = ?', await sha256(token)).toArray()[0];
     if (!row) return refuse(request, 'unknown or revoked arm token: pair this arm again');
     for (const old of this.ctx.getWebSockets(row.id)) old.close(4000, 'replaced by a newer connection of the same arm');
@@ -175,6 +192,7 @@ export class UserHub extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, data: string | ArrayBuffer): Promise<void> {
+    if (!this.has()) return ws.close(UNPAIRED, 'unknown or revoked arm token: pair this arm again');
     const att = ws.deserializeAttachment() as Attachment;
     let msg: { id?: string | number; method?: string; params?: Record<string, unknown>; result?: Record<string, unknown>; error?: { message?: string } };
     try {
@@ -354,6 +372,7 @@ export class UserHub extends DurableObject<Env> {
   }
 
   private arms(): ArmInfo[] {
+    if (!this.has()) return [];
     const online = new Set<string>();
     for (const ws of this.ctx.getWebSockets()) {
       const att = this.live(ws);
@@ -402,6 +421,7 @@ export class UserHub extends DurableObject<Env> {
 
   // Metadata only: never arguments or results (opt-in result storage is D2).
   private record(meta: CallMeta, armId: string | null, command: string, ok: boolean, ms: number, error: string | null): void {
+    this.ensure(); // a signed-in user's call: their hub may keep rows now
     this.sql.exec(
       'INSERT INTO activity(ts, session, client, arm_id, command, ok, ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       Date.now(),
@@ -417,6 +437,7 @@ export class UserHub extends DurableObject<Env> {
   }
 
   async recentActivity(limit = 50): Promise<ActivityRow[]> {
+    if (!this.has()) return [];
     return this.sql.exec<ActivityRow>('SELECT ts, client, arm_id, command, ok, ms, error FROM activity ORDER BY id DESC LIMIT ?', limit).toArray();
   }
 }

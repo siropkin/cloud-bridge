@@ -136,6 +136,18 @@ describe('arm socket', () => {
     const malformed = await connectArm('garbage', { name: 'x' });
     expect((await malformed.closed).code).toBe(4401);
   });
+  it('a forged token stores nothing in the user hub it names (S1: each one kept rows forever)', async () => {
+    const name = `gh-forged-${crypto.randomUUID()}`;
+    const forged = `cba_${btoa(name).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}.${'x'.repeat(43)}`;
+    const ws = await connectArm(forged, { name: 'x' });
+    expect((await ws.closed).code).toBe(4401);
+    const revoke = await hub('/arm/revoke', { method: 'POST', headers: { Authorization: `Bearer ${forged}` } });
+    expect(((await revoke.json()) as any).revoked).toBe(false);
+    const stub = env.USER_HUB.get(env.USER_HUB.idFromName(name));
+    expect(await stub.listTools()).toHaveLength(CHROME.length); // reads still answer: nothing paired
+    const tables = await runInDurableObject(stub, (_: UserHub, state) => state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table'").toArray());
+    expect(tables).toEqual([]);
+  });
   it('hello gets the policy, then a tools/list; ping is answered with pong', async () => {
     const cookie = await cookieFor(newUser());
     const { token } = await pairArm(cookie, 'fake', 'birch');
