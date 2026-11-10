@@ -115,6 +115,23 @@ describe('OAuth and sign-in state live in Durable Objects, not KV (S1: free KV t
     expect(left).toBe(0);
   });
 
+  it('a short-lived key moves a far-off sweep earlier (review of S2c: a moved client record\'s alarm months out kept every later pairing — place and token — on disk that long)', async () => {
+    const store = oauthKv(env);
+    const short = `pair:SOON-${crypto.randomUUID().slice(0, 4)}`;
+    const stub = storeOf(short);
+    const far = Date.now() + 90 * 86_400_000;
+    await runInDurableObject(stub, (_: OAuthStore, state) => state.storage.setAlarm(far));
+    await store.put(short, '{"x":1}', { expirationTtl: 300 });
+    const alarm = await runInDurableObject(stub, (_: OAuthStore, state) => state.storage.getAlarm());
+    expect(alarm).not.toBeNull();
+    expect(alarm!).toBeLessThanOrEqual(Date.now() + 300_000 + 15 * 60_000);
+    // A longer-lived key in the same object never pushes the sweep later.
+    let long = '';
+    for (let i = 0; shardOf(long) !== shardOf(short); i++) long = `pair:LONG-${i}`;
+    await store.put(long, '{}', { expirationTtl: 86_400 });
+    expect(await runInDurableObject(stub, (_: OAuthStore, state) => state.storage.getAlarm())).toBe(alarm);
+  });
+
   it('lists across shards in order, page by page, with metadata', async () => {
     const store = oauthKv(env);
     const prefix = `client:list-${crypto.randomUUID().slice(0, 8)}-`;

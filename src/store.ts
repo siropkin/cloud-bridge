@@ -78,7 +78,12 @@ export class OAuthStore extends DurableObject<Env> {
   async put(name: string, value: string, metadata: string | null, expires: number | null): Promise<void> {
     this.has(true);
     this.sql.exec('INSERT OR REPLACE INTO kv(name, value, metadata, expires) VALUES (?, ?, ?, ?)', name, value, metadata, expires);
-    if (expires !== null && (await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Math.max(expires, Date.now()) + SWEEP_MS);
+    if (expires === null) return;
+    // Earlier, never later: a shard whose next sweep is a moved client record's
+    // expiry months out would keep every short-lived row (pairing place, token) that long.
+    const sweep = Math.max(expires, Date.now()) + SWEEP_MS;
+    const alarm = await this.ctx.storage.getAlarm();
+    if (alarm === null || alarm > sweep) await this.ctx.storage.setAlarm(sweep);
   }
 
   async delete(name: string): Promise<boolean> {
