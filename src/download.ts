@@ -1,9 +1,12 @@
 // Downloads a file for an arm that has no business fetching it itself:
 // chrome-bridge's cloud upload takes public URLs, and a fetch from the user's
 // browser could reach their LAN (router, NAS, the local bridge) — hostname
-// checks can't stop a DNS name that points there. From here it can't:
-// global_fetch_strictly_public refuses private addresses on every hop. The
-// hostname check below only words the obvious cases for the model.
+// checks can't stop a DNS name that points there. From here it can't: the hub
+// runs on Cloudflare, not on the user's network, and Workers' fetch reaches
+// no internal network (Cloudflare's Workers security model). The hostname
+// check below only words the obvious cases for the model.
+// (global_fetch_strictly_public in wrangler.jsonc is not this guard: it only
+// sends a fetch of the hub's own address through Cloudflare's front door.)
 export const DOWNLOAD_MAX = 10 * 1024 * 1024;
 const TIMEOUT_MS = 30_000;
 

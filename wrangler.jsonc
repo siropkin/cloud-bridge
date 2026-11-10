@@ -3,8 +3,9 @@
   "name": "cloud-bridge",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
-  // global_fetch_strictly_public: fetch() can't reach private addresses, which lets the
-  // OAuth library fetch Client ID Metadata Documents (CIMD) safely for MCP clients.
+  // global_fetch_strictly_public: a fetch() of the hub's own address goes through
+  // Cloudflare's front door like any Internet request (not straight to an origin).
+  // It is not a private-address filter; Workers can't reach internal networks anyway.
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "vars": {
     // The URL MCP clients connect to; every access token is bound to it.
