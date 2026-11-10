@@ -214,6 +214,7 @@ export class UserHub extends DurableObject<Env> {
     const clash = this.sql.exec<{ name: string }>('SELECT name FROM arms WHERE kind = ? AND id != ?', row.kind, id).toArray().some((r) => r.name.toLowerCase() === wanted);
     if (clash) return 'taken';
     this.sql.exec('UPDATE arms SET name = ? WHERE id = ?', name, id);
+    for (const ws of this.ctx.getWebSockets(id)) this.sendName(ws, name);
     return 'ok';
   }
 
@@ -349,6 +350,8 @@ export class UserHub extends DurableObject<Env> {
     );
     const policy = { commands: {}, blockedDomains: [] }; // D3 fills these from settings
     ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/policy', params: policy }));
+    const named = this.sql.exec<{ name: string }>('SELECT name FROM arms WHERE id = ?', att.armId).toArray()[0];
+    if (named) this.sendName(ws, named.name);
     try {
       const listed = await this.request(ws, att.connId, 'tools/list', {});
       const tools = Array.isArray(listed.tools) ? (listed.tools as ArmTool[]).filter((t) => typeof t?.name === 'string') : [];
@@ -360,6 +363,17 @@ export class UserHub extends DurableObject<Env> {
       } catch {
         // the socket itself is what failed
       }
+    }
+  }
+
+  // arm/name: the name AI apps pick this arm by (renamed on /app). Arms keep
+  // their own name; chrome-bridge accepts this one too where a command line
+  // names its profile ("--profile Work"), which the hub never parses.
+  private sendName(ws: WebSocket, name: string): void {
+    try {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/name', params: { name } }));
+    } catch {
+      // closing: the next connection's hello gets it
     }
   }
 

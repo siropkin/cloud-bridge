@@ -118,6 +118,7 @@ async function run() {
         if (ev.data === 'pong') return;
         const msg = JSON.parse(ev.data);
         if (msg.method === 'arm/policy') return log('policy', JSON.stringify(msg.params));
+        if (msg.method === 'arm/name') return log('AI apps call this arm', JSON.stringify(msg.params?.name));
         if (msg.method === 'tools/list') return ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: TOOLS } }));
         if (msg.method === 'tools/call') {
           log('call', msg.params.name, JSON.stringify(msg.params.arguments));

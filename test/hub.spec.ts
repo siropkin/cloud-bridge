@@ -250,12 +250,13 @@ describe('arm socket', () => {
     const tables = await runInDurableObject(stub, (_: UserHub, state) => state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table'").toArray());
     expect(tables).toEqual([]);
   });
-  it('hello gets the policy, then a tools/list; ping is answered with pong', async () => {
+  it('hello gets the policy and the name AI apps use, then a tools/list; ping is answered with pong', async () => {
     const cookie = await cookieFor(newUser());
     const { token } = await pairArm(cookie, 'fake', 'birch');
     const a = await connectArm(token, { name: 'birch', tools: [ECHO] });
     await a.ready;
-    expect(a.received.map((m) => m.method)).toEqual(['arm/policy', 'tools/list']);
+    expect(a.received.map((m) => m.method)).toEqual(['arm/policy', 'arm/name', 'tools/list']);
+    expect(a.received[1]).toMatchObject({ jsonrpc: '2.0', method: 'arm/name', params: { name: 'birch' } });
     a.ws.send('ping');
     await new Promise((r) => setTimeout(r, 50));
     expect(a.received.at(-1)).toEqual({ method: 'pong' });

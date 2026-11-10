@@ -107,7 +107,7 @@ describe('renaming a Chrome profile', () => {
   it('AI apps pick it by the new name from their next call', async () => {
     const { user, cookie } = await signedIn();
     const calls: any[] = [];
-    const { arm } = await chrome(cookie, 'poplar', (p) => (calls.push(p), { content: [{ type: 'text', text: 'ok' }] }));
+    const { token, arm } = await chrome(cookie, 'poplar', (p) => (calls.push(p), { content: [{ type: 'text', text: 'ok' }] }));
     const [[id]] = await armIds(user.uid);
     const csrf = csrfOf(await appHtml(cookie));
     const res = await form('/app/rename', cookie, { csrf, id, name: '  Work laptop  ' });
@@ -123,7 +123,13 @@ describe('renaming a Chrome profile', () => {
     expect(calls[0].arguments).toEqual({ text: 'hi' }); // the arm never sees the hub-side name
     const old = await client.callTool({ name: 'chrome_echo', arguments: { text: 'hi', profile: 'poplar' } });
     expect((old.content as any)[0].text).toBe('No chrome named "poplar". Online: Work laptop. Pass profile as one of those names.');
+    // The arm hears the new name at once (a "--profile Work laptop" inside a command line is its to check), and again on every connection.
+    expect(arm.received.filter((m) => m.method === 'arm/name').map((m) => m.params.name)).toEqual(['poplar', 'Work laptop']);
     arm.ws.close();
+    const again = await connectArm(token, { kind: 'chrome', name: 'poplar', selector: 'profile', tools: [ECHO] });
+    await again.ready;
+    expect(again.received.find((m) => m.method === 'arm/name')?.params).toEqual({ name: 'Work laptop' });
+    again.ws.close();
   });
 
   it("refuses a name another profile has (any case), an empty or too long one, and says nothing changed", async () => {
