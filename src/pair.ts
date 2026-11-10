@@ -10,11 +10,22 @@ import { escapeHtml, json, page, randomToken, sha256, sign, verify } from './uti
 //   user GET  /pair?code=…  (signs in)       → Approve / Deny
 //   arm  POST /pair/poll {code, pollToken}   → pending | approved {armToken, armUrl} | expired
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
-const TTL = 600;
+// A code someone else started is a phishing lure: the shorter it lives, the
+// less time to talk the victim into clicking Connect (S2c; was 10 minutes).
+const TTL = 300;
+
+// Roughly where a request came from, per Cloudflare's IP geolocation. No address is kept.
+export interface Place {
+  city?: string;
+  region?: string;
+  country?: string;
+}
 
 interface PairRecord {
   kind: string;
   name: string;
+  started?: number; // records from before S2c have neither
+  from?: Place;
   pollHash: string;
   // approving: claimed by one Connect click while its arm record is made.
   status: 'pending' | 'approving' | 'approved' | 'denied';
@@ -35,6 +46,34 @@ function normCode(code: unknown): string {
 
 const key = (code: string) => `pair:${code}`;
 
+export function placeOf(request: Request): Place {
+  const cf = (request.cf ?? {}) as Record<string, unknown>;
+  const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 80) : undefined);
+  const country = text(cf.country)?.toUpperCase();
+  return { city: text(cf.city), region: text(cf.region), country: country === 'XX' ? undefined : country };
+}
+
+function countryName(code: string): string {
+  if (code === 'T1') return 'the Tor network';
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+// "around Seattle, United States" (read after "from"), or undefined when Cloudflare didn't say.
+export function placeText(place: Place | undefined): string | undefined {
+  if (!place?.country) return place?.city || place?.region ? `around ${place.city ?? place.region}` : undefined;
+  if (place.country === 'T1') return 'the Tor network';
+  return `around ${[place.city ?? place.region, countryName(place.country)].filter(Boolean).join(', ')}`;
+}
+
+export function agoText(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  return minutes < 1 ? 'less than a minute ago' : `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+}
+
 async function body(request: Request): Promise<Record<string, unknown>> {
   try {
     return (await request.json()) as Record<string, unknown>;
@@ -49,7 +88,8 @@ export async function pairStart(request: Request, env: Env): Promise<Response> {
   if (bad) return json({ error: 'invalid_request', message: `${bad}. Send {"kind":"chrome","name":"<profile>"}.` }, 400);
   const code = newCode();
   const pollToken = randomToken(32);
-  const record: PairRecord = { kind: kind as string, name: (name as string).trim(), pollHash: await sha256(pollToken), status: 'pending', expires: Date.now() + TTL * 1000 };
+  const now = Date.now();
+  const record: PairRecord = { kind: kind as string, name: (name as string).trim(), started: now, from: placeOf(request), pollHash: await sha256(pollToken), status: 'pending', expires: now + TTL * 1000 };
   await env.OAUTH_KV.put(key(code), JSON.stringify(record), { expirationTtl: TTL });
   const verificationUri = new URL(`/pair?code=${code}`, request.url).href;
   return json({ code, pollToken, verificationUri, interval: 3, expiresIn: TTL });
@@ -78,15 +118,26 @@ export async function pairPage(request: Request, env: HubEnv): Promise<Response>
   if (session instanceof Response) return session;
   const code = normCode(new URL(request.url).searchParams.get('code'));
   const record = await env.OAUTH_KV.get<PairRecord>(key(code), 'json');
-  if (!record || record.status !== 'pending') return expired();
+  if (!record || record.status !== 'pending' || record.expires < Date.now()) return expired();
   const csrf = await csrfFor(session.uid, code, env.COOKIE_ENCRYPTION_KEY);
+  // Whoever clicked Connect opens this page from the same browser, so from the
+  // same network: a request from another country is someone else's (S2c).
+  const there = record.from;
+  const here = placeOf(request);
+  const elsewhere = Boolean(there?.country && here.country && there.country !== here.country);
+  const where = placeText(there);
+  const when = record.started ? `Started ${agoText(Date.now() - record.started)}${where ? `, from ${where}` : ''}. ` : '';
+  const warning = elsewhere
+    ? `<p class="warn"><strong>Careful: this didn't start where you are.</strong> It started from ${escapeHtml(placeText(there)!)}, and this page opened from ${escapeHtml(placeText(here)!)}. Click Deny unless you're sure you just clicked Connect yourself.</p>\n`
+    : '';
+  const [connect, deny] = elsewhere ? [' class="secondary"', ''] : ['', ' class="secondary"'];
   return page(
     `Connect ${armLabel(record.kind, record.name)}?`,
-    `<p>Did you just click <strong>Connect</strong> in ${escapeHtml(connectWhere(record.kind))}? Then click Connect below. If you didn't, click Deny: someone else may be trying to link their browser to your account.</p>
-<p class="note">Code <code>${escapeHtml(code)}</code>. ${escapeHtml(codeWhere(record.kind))} shows the same code while it waits.</p>
+    `${warning}<p>Did you just click <strong>Connect</strong> in ${escapeHtml(connectWhere(record.kind))}? Then click Connect below. If you didn't, click Deny: someone else may be trying to link their browser to your account.</p>
+<p class="note">${escapeHtml(when)}Code <code>${escapeHtml(code)}</code>. ${escapeHtml(codeWhere(record.kind))} shows the same code while it waits.</p>
 <p>Once connected, Claude, ChatGPT and other AI apps you allow can use it as <strong>@${escapeHtml(session.login)}</strong>.</p>
 <form method="post" action="/pair/approve"><input type="hidden" name="code" value="${escapeHtml(code)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
-<p><button name="decision" value="approve">Connect</button> <button class="secondary" name="decision" value="deny">Deny</button></p></form>`,
+<p><button${connect} name="decision" value="approve">Connect</button> <button${deny} name="decision" value="deny">Deny</button></p></form>`,
   );
 }
 

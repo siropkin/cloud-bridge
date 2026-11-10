@@ -2,6 +2,7 @@ import chromeTools from '../src/chrome-tools.json';
 import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import { safeNext } from '../src/auth';
+import { oauthKv } from '../src/store';
 import type { UserHub } from '../src/hub';
 import { describe, expect, it } from 'vitest';
 import { COPY_SCRIPT } from '../src/guide';
@@ -154,6 +155,79 @@ describe('pairing', () => {
     await hub('/pair/approve', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code: start.code, csrf, decision: 'deny' }) });
     const res = await hub('/pair/poll', { method: 'POST', body: JSON.stringify({ code: start.code, pollToken: start.pollToken }) });
     expect(res.status).toBe(403);
+  });
+});
+
+describe('pairing anti-phishing (S2c)', () => {
+  const SEATTLE = { city: 'Seattle', region: 'Washington', country: 'US' };
+  const LAGOS = { city: 'Lagos', region: 'Lagos', country: 'NG' };
+  const start = async (cf?: object) => (await (await hub('/pair/start', { method: 'POST', body: JSON.stringify({ kind: 'chrome', name: 'birch' }), ...(cf ? { cf } : {}) } as RequestInit)).json()) as any;
+  const open = async (code: string, cookie: string, cf?: object) => (await hub(`/pair?code=${code}`, { headers: { Cookie: cookie }, ...(cf ? { cf } : {}) } as RequestInit)).text();
+  const buttons = (html: string) => /<p><button[^]*?<\/p>/.exec(html)![0];
+
+  it('a code lives 5 minutes (was 10: the time a phisher has to get it clicked)', async () => {
+    const s = await start(SEATTLE);
+    expect(s.expiresIn).toBe(300);
+    const { keys } = await oauthKv(env).list({ prefix: `pair:${s.code}` });
+    expect(keys).toHaveLength(1);
+    const left = keys[0].expiration! * 1000 - Date.now();
+    expect(left).toBeGreaterThan(290_000);
+    expect(left).toBeLessThanOrEqual(300_000);
+  });
+  it('the page says when and roughly where the request started', async () => {
+    const cookie = await cookieFor(newUser());
+    const s = await start(SEATTLE);
+    const html = await open(s.code, cookie, SEATTLE);
+    expect(html).toContain('Started less than a minute ago, from around Seattle, United States. Code');
+    expect(html).not.toContain('class="warn"');
+    expect(buttons(html)).toBe('<p><button name="decision" value="approve">Connect</button> <button class="secondary" name="decision" value="deny">Deny</button></p>');
+    // Three minutes later, the same page says so.
+    const store = oauthKv(env);
+    const raw = JSON.parse((await store.get(`pair:${s.code}`)) as string);
+    await store.put(`pair:${s.code}`, JSON.stringify({ ...raw, started: raw.started - 3 * 60_000 }), { expirationTtl: 120 });
+    expect(await open(s.code, cookie, SEATTLE)).toContain('Started 3 minutes ago, from around Seattle, United States.');
+  });
+  it('a request from another country than the page warns and makes Deny the main button', async () => {
+    const cookie = await cookieFor(newUser());
+    const s = await start(LAGOS);
+    const html = await open(s.code, cookie, SEATTLE);
+    expect(html).toContain('<p class="warn"><strong>Careful: this didn\'t start where you are.</strong> It started from around Lagos, Nigeria, and this page opened from around Seattle, United States. Click Deny unless you\'re sure you just clicked Connect yourself.</p>');
+    expect(buttons(html)).toBe('<p><button class="secondary" name="decision" value="approve">Connect</button> <button name="decision" value="deny">Deny</button></p>');
+    // Still the user's call: Connect works.
+    const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1];
+    const ok = await hub('/pair/approve', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code: s.code, csrf, decision: 'approve' }) });
+    expect(ok.status).toBe(200);
+  });
+  it('Tor and unknown places read plainly; a place Cloudflare left out is skipped, never guessed', async () => {
+    const cookie = await cookieFor(newUser());
+    const tor = await start({ country: 'T1' });
+    expect(await open(tor.code, cookie, { country: 'T1' })).toContain('Started less than a minute ago, from the Tor network. Code');
+    const torElsewhere = await open(tor.code, cookie, SEATTLE);
+    expect(torElsewhere).toContain('It started from the Tor network, and this page opened from around Seattle, United States.');
+    const unknown = await start({ country: 'XX' });
+    const u = await open(unknown.code, cookie, SEATTLE);
+    expect(u).toContain('Started less than a minute ago. Code');
+    expect(u).not.toContain('class="warn"'); // no country to compare
+    const cityOnly = await start({ city: 'Springfield' });
+    expect(await open(cityOnly.code, cookie)).toContain('Started less than a minute ago, from around Springfield. Code');
+  });
+  it('a city name is escaped on the page', async () => {
+    const cookie = await cookieFor(newUser());
+    const s = await start({ city: '<img src=x onerror=alert(1)>', country: 'US' });
+    const html = await open(s.code, cookie);
+    expect(html).toContain('from around &#60;img src=x onerror=alert(1)&#62;, United States.');
+    expect(html).not.toContain('<img src=x');
+  });
+  it('a code from before S2c (no time or place) still shows its page', async () => {
+    const cookie = await cookieFor(newUser());
+    const s = await start(SEATTLE);
+    const store = oauthKv(env);
+    const { started, from, ...old } = JSON.parse((await store.get(`pair:${s.code}`)) as string);
+    expect([typeof started, from]).toEqual(['number', SEATTLE]);
+    await store.put(`pair:${s.code}`, JSON.stringify(old), { expirationTtl: 120 });
+    const html = await open(s.code, cookie, LAGOS);
+    expect(html).toContain('<p class="note">Code <code>');
+    expect(html).not.toContain('class="warn"');
   });
 });
 
