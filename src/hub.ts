@@ -13,6 +13,7 @@ interface Attachment {
   // One per socket: a replaced connection's late close must not fail calls on its successor.
   connId: string;
   ready: boolean; // hello received and tools listed
+  hello?: boolean; // hello received (absent on sockets from before it existed)
   since?: number; // when the socket opened (absent on sockets from before it existed)
 }
 
@@ -241,7 +242,20 @@ export class UserHub extends DurableObject<Env> {
     }
   }
 
+  // Once per connection (arms send it on open). Each hello writes the arm's row
+  // twice and asks for its tools: repeated on one socket it spent the account's
+  // shared Durable Object write budget (100k rows/day) with no request cost (S1).
   private async hello(ws: WebSocket, att: Attachment, params: Record<string, unknown>): Promise<void> {
+    if (att.hello || att.ready) {
+      try {
+        ws.close(4400, 'arm/hello is sent once per connection: reconnect to announce again');
+      } catch {
+        // already closed
+      }
+      return;
+    }
+    const greeted: Attachment = { ...att, hello: true };
+    ws.serializeAttachment(greeted);
     const str = (v: unknown, max: number) => (typeof v === 'string' && v ? v.slice(0, max) : null);
     this.sql.exec(
       'UPDATE arms SET version = ?, selector = ?, offline_hint = ?, last_seen = ? WHERE id = ?',
@@ -257,7 +271,7 @@ export class UserHub extends DurableObject<Env> {
       const listed = await this.request(ws, att.connId, 'tools/list', {});
       const tools = Array.isArray(listed.tools) ? (listed.tools as ArmTool[]).filter((t) => typeof t?.name === 'string') : [];
       this.sql.exec('UPDATE arms SET tools = ? WHERE id = ?', JSON.stringify(tools), att.armId);
-      ws.serializeAttachment({ ...att, ready: true } satisfies Attachment);
+      ws.serializeAttachment({ ...greeted, ready: true } satisfies Attachment);
     } catch (error) {
       try {
         ws.close(4002, `tools/list failed: ${(error as Error).message}`.slice(0, 120));

@@ -167,6 +167,15 @@ describe('arm socket', () => {
     expect((await first.closed).code).toBe(4000);
     second.ws.close();
   });
+  it('a second hello on one socket closes it instead of rewriting the arm (S1: a write-budget flood)', async () => {
+    const { token } = await pairArm(await cookieFor(newUser()), 'fake', 'birch');
+    const a = await connectArm(token, { name: 'birch', tools: [ECHO] });
+    await a.ready;
+    for (let i = 0; i < 3; i++) a.ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: { kind: 'fake', name: 'birch', version: '0.1.0' } }));
+    const closed = await Promise.race([a.closed, new Promise((r) => setTimeout(() => r('still open'), 500))]);
+    expect(closed).toEqual({ code: 4400, reason: 'arm/hello is sent once per connection: reconnect to announce again' });
+    expect(a.received.filter((m) => m.method === 'tools/list')).toHaveLength(1);
+  });
 });
 
 describe('replaced connections', () => {
