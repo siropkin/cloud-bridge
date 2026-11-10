@@ -4,6 +4,7 @@ import { authorize, callback, login, logout, requireSession, type HubEnv } from 
 import { fileResponse } from './files';
 import { armTokenUser, ARM_PROTOCOL, refuse } from './hub';
 import { addPage, homePage } from './guide';
+import { limitAnonymous } from './limits';
 import { mcpHandler } from './mcp';
 import { pairApprove, pairPage, pairPoll, pairStart } from './pair';
 import { oauthKv } from './store';
@@ -99,9 +100,12 @@ const provider = new OAuthProvider<Env>({
 // Everything below the provider (the OAuth library, pairing, web sign-in) sees
 // OAUTH_KV as the Durable Object store: free KV takes only 1,000 writes a day for
 // the whole account, and anonymous requests used to spend them (src/store.ts).
-// Files reach the real KV through UserHub's own env.
+// Files reach the real KV through UserHub's own env. Per-network limits come
+// first, so a flood on /register never reaches the library's storage.
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const limited = await limitAnonymous(request, env);
+    if (limited) return limited;
     return provider.fetch(request, { ...env, OAUTH_KV: oauthKv(env) }, ctx);
   },
 } satisfies ExportedHandler<Env>;

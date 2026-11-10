@@ -95,6 +95,15 @@ export class OAuthStore extends DurableObject<Env> {
     return true;
   }
 
+  // One more of a counted thing, unless `limit` are already taken before `expires`
+  // (one row write per take; nothing written once the limit is reached).
+  async take(name: string, limit: number, expires: number): Promise<boolean> {
+    const taken = Number((await this.get(name))?.value ?? 0);
+    if (taken >= limit) return false;
+    await this.put(name, String(taken + 1), null, expires);
+    return true;
+  }
+
   // Names after `after`, in order, up to `limit`.
   async list(prefix: string, limit: number, after: string, now = Date.now()): Promise<Listed[]> {
     if (!this.has()) return [];
@@ -225,4 +234,10 @@ export function oauthKv(env: Env): KVNamespace {
 // `expected` and now holds `value`.
 export function swapText(env: Env, name: string, expected: string, value: string, expirationTtl: number): Promise<boolean> {
   return env.OAUTH_STORE.get(env.OAUTH_STORE.idFromName(shardOf(name))).swap(name, expected, value, Date.now() + expirationTtl * 1000);
+}
+
+// Hub-wide counters (today: file links per UTC day), in one object of their own.
+export const QUOTA_OBJECT = 'quota';
+export function takeQuota(env: Env, name: string, limit: number, expires: number): Promise<boolean> {
+  return env.OAUTH_STORE.get(env.OAUTH_STORE.idFromName(QUOTA_OBJECT)).take(`quota:${name}`, limit, expires);
 }

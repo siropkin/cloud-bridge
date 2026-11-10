@@ -3,6 +3,8 @@ import { buildToolList, resolveCall, type ArmInfo, type ArmTool, type HubTool } 
 import { randomToken, sha256, b64url } from './util';
 import { downloadPublic } from './download';
 import { FILE_MAX, FILES_PER_DAY, getFile, putFile, safeName, type FileMeta } from './files';
+import { ARM_CONNECTS_PER_HOUR, CALLS_PER_DAY, CALLS_PER_MINUTE, DAY_MS, FILES_PER_DAY_ALL, HOUR_MS, MINUTE_MS, armConnectsText, callsPerDayText, callsPerMinuteText, filesTodayText } from './limits';
+import { takeQuota } from './store';
 
 export const ARM_PROTOCOL = 'cloud-bridge.v1';
 const ARM_KINDS = /^[a-z][a-z0-9-]{0,23}$/;
@@ -69,6 +71,8 @@ type ArmRow = {
   tools: string | null;
   selector: string | null;
   offline_hint: string | null;
+  connects: number | null; // connections in the hour since connects_since
+  connects_since: number | null;
 };
 
 // "cba_<base64url(userId)>.<secret>": the worker routes on the user part, the hub checks the hash.
@@ -124,7 +128,12 @@ export class UserHub extends DurableObject<Env> {
     if (this.schema) return;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS arms(
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, version TEXT, token_hash TEXT NOT NULL UNIQUE,
-      created_at INTEGER NOT NULL, last_seen INTEGER, tools TEXT, selector TEXT, offline_hint TEXT)`);
+      created_at INTEGER NOT NULL, last_seen INTEGER, tools TEXT, selector TEXT, offline_hint TEXT,
+      connects INTEGER, connects_since INTEGER)`);
+    // Hubs made before the connection count (S2a) get its columns on their next wake.
+    const columns = new Set(this.sql.exec<{ name: string }>('PRAGMA table_info(arms)').toArray().map((c) => c.name));
+    if (!columns.has('connects')) this.sql.exec('ALTER TABLE arms ADD COLUMN connects INTEGER');
+    if (!columns.has('connects_since')) this.sql.exec('ALTER TABLE arms ADD COLUMN connects_since INTEGER');
     this.sql.exec(`CREATE TABLE IF NOT EXISTS activity(
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, session TEXT, client TEXT, arm_id TEXT, command TEXT NOT NULL,
       target_host TEXT, ok INTEGER NOT NULL, ms INTEGER NOT NULL, error TEXT, result_ref TEXT)`);
@@ -182,11 +191,20 @@ export class UserHub extends DurableObject<Env> {
     if (!this.has()) return refuse(request, 'unknown or revoked arm token: pair this arm again');
     const row = this.sql.exec<ArmRow>('SELECT * FROM arms WHERE token_hash = ?', await sha256(token)).toArray()[0];
     if (!row) return refuse(request, 'unknown or revoked arm token: pair this arm again');
+    // A plain 429 (no socket): browsers grow their reconnect backoff on a failed
+    // handshake, where an accepted-then-closed socket resets it. Checked before
+    // the live connection is replaced, and nothing is written.
+    const now = Date.now();
+    const fresh = !row.connects_since || now - row.connects_since >= HOUR_MS;
+    if (!fresh && (row.connects ?? 0) >= ARM_CONNECTS_PER_HOUR) {
+      const wait = row.connects_since! + HOUR_MS - now;
+      return new Response(armConnectsText(row.kind, row.name, wait), { status: 429, headers: { 'Retry-After': String(Math.ceil(wait / 1000)), 'Content-Type': 'text/plain; charset=utf-8' } });
+    }
     for (const old of this.ctx.getWebSockets(row.id)) old.close(4000, 'replaced by a newer connection of the same arm');
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, [row.id]);
-    server.serializeAttachment({ armId: row.id, userId: armTokenUser(token) ?? undefined, connId: crypto.randomUUID(), ready: false, since: Date.now() } satisfies Attachment);
-    this.sql.exec('UPDATE arms SET last_seen = ? WHERE id = ?', Date.now(), row.id);
+    server.serializeAttachment({ armId: row.id, userId: armTokenUser(token) ?? undefined, connId: crypto.randomUUID(), ready: false, since: now } satisfies Attachment);
+    this.sql.exec('UPDATE arms SET last_seen = ?, connects = ?, connects_since = ? WHERE id = ?', now, fresh ? 1 : (row.connects ?? 0) + 1, fresh ? now : row.connects_since, row.id);
     const headers = new Headers();
     if (request.headers.get('Sec-WebSocket-Protocol')) headers.set('Sec-WebSocket-Protocol', ARM_PROTOCOL);
     return new Response(null, { status: 101, webSocket: client, headers });
@@ -332,7 +350,20 @@ export class UserHub extends DurableObject<Env> {
     this.sql.exec('DELETE FROM files WHERE ts < ?', now - 86400_000);
     const kept = this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM files').one().n;
     if (kept >= FILES_PER_DAY) return refuse(`Cloud Bridge already kept ${FILES_PER_DAY} files for this account in the last 24 hours; the result itself still comes back without --out/--har`);
-    this.sql.exec('INSERT INTO files(ts, size) VALUES (?, ?)', now, bytes.length);
+    // Each file is a KV write, and free KV takes 1,000 a day for every user together.
+    // The account's row is taken first: the await below lets other calls in.
+    const reserved = this.sql.exec<{ id: number }>('INSERT INTO files(ts, size) VALUES (?, ?) RETURNING rowid AS id', now, bytes.length).one().id;
+    let allowed: boolean;
+    try {
+      allowed = await takeQuota(this.env, `files:${Math.floor(now / DAY_MS)}`, FILES_PER_DAY_ALL, (Math.floor(now / DAY_MS) + 1) * DAY_MS);
+    } catch (error) {
+      this.sql.exec('DELETE FROM files WHERE rowid = ?', reserved);
+      return refuse(`Cloud Bridge couldn't keep the file (${(error as Error).message}); try again, or run it without --out/--har`);
+    }
+    if (!allowed) {
+      this.sql.exec('DELETE FROM files WHERE rowid = ?', reserved);
+      return refuse(filesTodayText(now));
+    }
     const mimeType = typeof params.mimeType === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(params.mimeType) ? params.mimeType : 'application/octet-stream';
     try {
       const file = await putFile(this.env.OAUTH_KV, userId, new URL(this.env.MCP_RESOURCE).origin, safeName(params.name), mimeType, bytes, now);
@@ -408,8 +439,33 @@ export class UserHub extends DurableObject<Env> {
     return buildToolList(this.arms());
   }
 
+  // Calls still waiting for their arm: activity records a call when it ends,
+  // so a burst of parallel calls would otherwise all pass the count.
+  private calling = 0;
+
+  // Why this call can't run now, or null. The count reads activity (one row per
+  // call, ids in order, nothing written): there were `limit` calls in the window
+  // when the row `limit` back from the newest is inside it. Two point reads.
+  private overLimit(now: number): string | null {
+    const newest = this.has() ? (this.sql.exec<{ id: number | null }>('SELECT MAX(id) AS id FROM activity').one().id ?? 0) : 0;
+    for (const [limit, window, text] of [
+      [CALLS_PER_DAY, DAY_MS, callsPerDayText],
+      [CALLS_PER_MINUTE, MINUTE_MS, callsPerMinuteText],
+    ] as const) {
+      const back = limit - this.calling;
+      if (back <= 0) return text(window);
+      if (newest - back + 1 < 1) continue;
+      const ts = this.sql.exec<{ ts: number }>('SELECT ts FROM activity WHERE id = ?', newest - back + 1).toArray()[0]?.ts;
+      if (ts !== undefined && ts > now - window) return text(ts + window - now);
+    }
+    return null;
+  }
+
   async callTool(name: string, args: Record<string, unknown>, meta: CallMeta = {}): Promise<ToolResult> {
     const started = Date.now();
+    // Not recorded: a refused call writes nothing, so a runaway client can't spend rows on refusals.
+    const limited = this.overLimit(started);
+    if (limited) return { content: [{ type: 'text', text: limited }], isError: true };
     const resolved = resolveCall(this.arms(), name, args, started);
     if (!resolved.ok) {
       this.record(meta, null, name, false, Date.now() - started, resolved.error);
@@ -418,6 +474,7 @@ export class UserHub extends DurableObject<Env> {
     const { arm, tool } = resolved;
     const ws = this.ctx.getWebSockets(arm.id).find((s) => this.live(s));
     if (!ws) return { content: [{ type: 'text', text: `The ${arm.kind} "${arm.name}" just went offline. Call this tool again in a few seconds.` }], isError: true };
+    this.calling++;
     try {
       const result = await this.request(ws, (ws.deserializeAttachment() as Attachment).connId, 'tools/call', { name: tool, arguments: resolved.args, _meta: { client: meta.client, session: meta.session } });
       const content = Array.isArray(result.content) ? (result.content as ToolResult['content']) : [{ type: 'text', text: JSON.stringify(result) }];
@@ -430,6 +487,8 @@ export class UserHub extends DurableObject<Env> {
       const text = `The ${arm.kind} "${arm.name}" failed on ${name}: ${(error as Error).message}. The command may or may not have run: check the current state before retrying.`;
       this.record(meta, arm.id, name, false, Date.now() - started, (error as Error).message);
       return { content: [{ type: 'text', text }], isError: true };
+    } finally {
+      this.calling--; // in the same step as its activity row: the count never sees it twice or not at all
     }
   }
 
@@ -447,6 +506,7 @@ export class UserHub extends DurableObject<Env> {
       ms,
       error ? error.slice(0, 500) : null,
     );
+    // Keeps the newest 5,000: CALLS_PER_DAY counts these rows, so it can't be higher.
     this.sql.exec('DELETE FROM activity WHERE ts < ? OR id <= (SELECT MAX(id) FROM activity) - 5000', Date.now() - 30 * 86400_000);
   }
 
