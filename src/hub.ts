@@ -655,9 +655,21 @@ export class UserHub extends DurableObject<Env> {
         error ? error.slice(0, 500) : null,
       )
       .one().id;
-    // Keeps the newest 5,000: CALLS_PER_DAY counts these rows, so it can't be higher.
-    this.sql.exec('DELETE FROM activity WHERE ts < ? OR id <= (SELECT MAX(id) FROM activity) - 5000', Date.now() - 30 * 86400_000);
+    this.prune(Date.now());
     this.broadcast(this.activityWhere('a.id = ?', [id], 1));
+  }
+
+  // Keeps 30 days, at most the newest 5,000 (CALLS_PER_DAY counts these rows, so
+  // it can't be higher). Two range deletes on the id: the one "ts < ? OR id <= …"
+  // read every row on every call (5,000 a call against the Free plan's rows-read
+  // budget, shared by every account). The row just written keeps the subquery
+  // from being empty. Returns the rows read, so a test can hold it to a constant.
+  prune(now: number): number {
+    const capped = this.sql.exec('DELETE FROM activity WHERE id <= (SELECT MAX(id) FROM activity) - 5000');
+    capped.toArray();
+    const aged = this.sql.exec('DELETE FROM activity WHERE id < (SELECT id FROM activity WHERE ts >= ? ORDER BY id LIMIT 1)', now - 30 * 86400_000);
+    aged.toArray();
+    return capped.rowsRead + aged.rowsRead;
   }
 
   // Open Activity pages get each row as it's written.

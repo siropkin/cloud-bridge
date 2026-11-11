@@ -312,3 +312,20 @@ describe('the account page', () => {
     expect(JSON.parse(/>([\s\S]*)<\/script>$/.exec(html)![1]).rows[0].client).toContain('</script>');
   });
 });
+
+describe('activity upkeep', () => {
+  it('trimming old steps reads a few rows per call, not the whole history (it read all 5,000 on every call)', async () => {
+    const { user, client, arm } = await setup();
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'a' } });
+    const read = await runInDurableObject(stubOf(user.uid), (instance: UserHub, state) => {
+      const now = Date.now();
+      state.storage.sql.exec("UPDATE activity SET ts = ?, command = 'old'", now - 31 * 86400_000); // the first call's row, 31 days back
+      for (let i = 0; i < 3000; i++) state.storage.sql.exec("INSERT INTO activity(ts, command, ok, ms) VALUES (?, 'fake_echo', 1, 1)", now);
+      return instance.prune(now);
+    });
+    expect(read).toBeLessThan(20);
+    const commands = await runInDurableObject(stubOf(user.uid), (_: UserHub, state) => state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM activity WHERE command = 'old'").one().n);
+    expect(commands).toBe(0); // the 31-day-old step went; the order of ids is the order of time
+    arm.ws.close();
+  });
+});
