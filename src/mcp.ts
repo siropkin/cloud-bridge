@@ -47,7 +47,7 @@ export const mcpHandler = createMcpHandler(
     server.setRequestHandler('tools/call', async (request, ctx) => {
       const { name, arguments: args = {} } = request.params;
       // Arms send MCP content blocks; the hub passes them through without reshaping.
-      return (await hub.callTool(name, args, { client: ctx.http?.authInfo?.clientId })) as CallToolResult;
+      return (await hub.callTool(name, args, { client: ctx.http?.authInfo?.clientId, clientName: props.clientName })) as CallToolResult;
     });
     server.setRequestHandler('resources/list', async () => ({ resources: DOCS.map(({ text, ...d }) => ({ ...d, size: new TextEncoder().encode(text).length })) }));
     server.setRequestHandler('resources/read', async (request) => readResource(request.params.uri, props.userId));

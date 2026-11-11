@@ -8,6 +8,9 @@ export type HubEnv = Env & { OAUTH_PROVIDER: OAuthHelpers };
 export interface Props extends Record<string, unknown> {
   userId: string; // "gh-<numeric GitHub id>": stable across renames (the OAuth library forbids ":")
   login: string;
+  // The AI app's name as the user allowed it, so Activity still names it after
+  // it's removed (tokens from before D2 lack it: the page falls back to the grant's).
+  clientName?: string;
 }
 
 export interface Session {
@@ -221,12 +224,14 @@ export async function authorize(request: Request, env: HubEnv): Promise<Response
 }
 
 async function complete(oauth: OAuthHelpers, authRequest: AuthRequest, props: Props, headers: Headers): Promise<Response> {
+  const client = await oauth.lookupClient(authRequest.clientId).catch(() => null);
+  const clientName = client?.clientName?.trim().slice(0, 100);
   const { redirectTo } = await oauth.completeAuthorization({
     request: authRequest,
     userId: props.userId,
     metadata: { login: props.login },
     scope: authRequest.scope,
-    props,
+    props: clientName ? { ...props, clientName } : props,
   });
   headers.set('Location', redirectTo);
   return new Response(null, { status: 302, headers });

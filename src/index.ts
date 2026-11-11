@@ -1,7 +1,8 @@
 import { env } from 'cloudflare:workers';
 import OAuthProvider from '@cloudflare/workers-oauth-provider';
 import { authorize, callback, login, logout, requireSession, type HubEnv } from './auth';
-import { appPage, deleteAccount, deletePage, disconnectBrowser, forgetApp, renameBrowser } from './app';
+import { activityJson, activityLive } from './activity';
+import { activityPage, appPage, deleteAccount, deletePage, disconnectBrowser, forgetApp, renameBrowser } from './app';
 import { fileResponse } from './files';
 import { armTokenUser, ARM_PROTOCOL, refuse } from './hub';
 import { addPage, homePage } from './guide';
@@ -67,6 +68,9 @@ async function route(request: Request, env: HubEnv): Promise<Response> {
   if (pathname === '/login' && m === 'GET') return login(request, env);
   if (pathname === '/logout' && m === 'POST') return logout(request);
   if (pathname === '/app' && m === 'GET') return appPage(request, env);
+  if (pathname === '/app/activity' && m === 'GET') return activityPage(request, env);
+  if (pathname === '/app/activity.json' && m === 'GET') return activityJson(request, env);
+  if (pathname === '/app/activity/live' && m === 'GET') return activityLive(request, env);
   if (pathname === '/app/rename' && m === 'POST') return renameBrowser(request, env);
   if (pathname === '/app/disconnect' && m === 'POST') return disconnectBrowser(request, env);
   if (pathname === '/app/forget' && m === 'POST') return forgetApp(request, env);

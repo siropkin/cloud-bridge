@@ -45,7 +45,12 @@ function call(name, a = {}) {
   }
   if (name === 'fake_snap') {
     const url = a.url ?? 'https://example.com/';
-    return { content: [{ type: 'text', text: `${url}  "Example Domain"\n[1] heading "Example Domain"\n[2] link "More information..."` }] };
+    let site;
+    try {
+      site = new URL(url).host;
+    } catch {}
+    // _meta 'cloud-bridge/activity': what the Activity page shows (the hub keeps it, never forwards it).
+    return { content: [{ type: 'text', text: `${url}  "Example Domain"\n[1] heading "Example Domain"\n[2] link "More information..."` }], _meta: { 'cloud-bridge/activity': { command: 'snap', site } } };
   }
   return { content: [{ type: 'text', text: `Unknown tool ${name}. Tools: ${TOOLS.map((t) => t.name).join(', ')}.` }], isError: true };
 }

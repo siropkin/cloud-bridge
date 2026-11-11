@@ -1,9 +1,10 @@
 // /app: the signed-in person's own page. What's connected (Chrome profiles, AI
 // apps), how to add one, and the account itself (sign out, delete my data).
-// Plain HTML forms, no script beyond the copy button: every action is a POST
-// with a token bound to this account, from the hub's own pages only.
+// Plain HTML forms (scripts: the copy button, the live activity list): every
+// action is a POST with a token bound to this account, from the hub's own pages only.
 import type { GrantSummary } from '@cloudflare/workers-oauth-provider';
 import { clearSession, readSession, requireSession, sameOrigin, type HubEnv, type Session } from './auth';
+import { ACTIVITY_STYLE, activityData, activityScript, PAGE_ROWS, STRIP_ROWS } from './activity';
 import { addSteps, COPY_SCRIPT } from './guide';
 import { validArm, type ArmDetails } from './hub';
 import { armLabel } from './kinds';
@@ -39,6 +40,7 @@ function hidden(fields: Record<string, string>): string {
 
 interface AllowedApp {
   id: string;
+  clientId: string;
   name: string;
   host: string;
   since: number; // ms
@@ -61,11 +63,14 @@ async function allowedApps(env: HubEnv, uid: string): Promise<AllowedApp[]> {
       } catch {
         // an unusual redirect: show the app without it
       }
-      return { id: g.id, name: client?.clientName?.trim() || g.clientId, host, since: g.createdAt * 1000 };
+      return { id: g.id, clientId: g.clientId, name: client?.clientName?.trim() || g.clientId, host, since: g.createdAt * 1000 };
     }),
   );
   return apps.sort((a, b) => b.since - a.since);
 }
+
+// Activity names an app by the name it had when allowed, else by its grant's.
+const appNames = (apps: AllowedApp[]) => Object.fromEntries(apps.map((a) => [a.clientId, a.name]));
 
 function browsersSection(arms: ArmDetails[], csrf: string, now: number): string {
   if (!arms.length) {
@@ -101,21 +106,47 @@ export async function appPage(request: Request, env: HubEnv): Promise<Response> 
   if (session instanceof Response) return session;
   const params = new URL(request.url).searchParams;
   const now = Date.now();
-  const [arms, apps, csrf] = await Promise.all([hubOf(env, session.uid).armDetails(), allowedApps(env, session.uid), csrfFor(session.uid, env.COOKIE_ENCRYPTION_KEY)]);
+  const hub = hubOf(env, session.uid);
+  const [arms, apps, csrf, latest, live] = await Promise.all([hub.armDetails(), allowedApps(env, session.uid), csrfFor(session.uid, env.COOKIE_ENCRYPTION_KEY), hub.activityRows(0, STRIP_ROWS), activityScript()]);
   const done = DONE[params.get('done') ?? ''];
   const problem = PROBLEM[params.get('error') ?? ''];
   const flash = done ? `<p class="ok">${done}</p>\n` : problem ? `<p class="warn">${problem}</p>\n` : '';
   return page(
     'Your Cloud Bridge',
     `<p class="note">Signed in with GitHub as <strong>@${escapeHtml(session.login)}</strong>.</p>
-${flash}${browsersSection(arms, csrf, now)}
+${flash}${ACTIVITY_STYLE}<section><h2>Latest from AI apps</h2>
+<p id="activity-status" class="note">Connecting…</p>
+<div id="activity-list"></div>
+<p><a href="/app/activity">See everything AI apps did in your Chrome →</a></p>
+${activityData('strip', latest.rows, latest.more, appNames(apps))}</section>
+${browsersSection(arms, csrf, now)}
 ${appsSection(apps, csrf)}
 <h2>Add Cloud Bridge to an AI app</h2>
 ${addSteps(request.url)}
 <section><h2>Your account</h2>
 <form method="post" action="/logout"><p><button class="secondary">Sign out</button></p></form>
 <p><a href="/app/delete">Delete my data…</a> Signs out every Chrome profile and AI app and deletes what Cloud Bridge keeps for you.</p></section>`,
-    { script: COPY_SCRIPT },
+    { script: [COPY_SCRIPT, live], connect: new URL(request.url).origin },
+  );
+}
+
+// GET /app/activity: everything kept, grouped by app and profile, with filters; live.
+export async function activityPage(request: Request, env: HubEnv): Promise<Response> {
+  const session = await requireSession(request, env);
+  if (session instanceof Response) return session;
+  const [apps, { rows, more }, live] = await Promise.all([allowedApps(env, session.uid), hubOf(env, session.uid).activityRows(0, PAGE_ROWS), activityScript()]);
+  return page(
+    'What AI apps did in your Chrome',
+    `${ACTIVITY_STYLE}<p class="note">Signed in with GitHub as <strong>@${escapeHtml(session.login)}</strong> · <a href="/app">Back to your Cloud Bridge</a></p>
+<p>Each step an AI app takes in your Chrome shows up here as it happens. Cloud Bridge keeps when it happened, which app and Chrome profile, what kind of step, the website and whether it worked. It doesn't keep what was typed or what the page showed. Steps stay for 30 days (the latest 5,000).</p>
+<div class="filters"><select id="f-app" aria-label="AI app"></select><select id="f-profile" aria-label="Chrome profile"></select>
+<label><input type="checkbox" id="f-bad"> Only steps that didn't work</label><input id="f-q" type="search" placeholder="Search steps or websites" aria-label="Search steps or websites"></div>
+<p id="activity-status" class="note">Connecting…</p>
+<div id="activity-list"></div>
+<p><button class="secondary" id="activity-more" hidden>Show older steps</button></p>
+<noscript><p class="warn">This page needs JavaScript to show your activity.</p></noscript>
+${activityData('full', rows, more, appNames(apps))}`,
+    { script: live, connect: new URL(request.url).origin },
   );
 }
 

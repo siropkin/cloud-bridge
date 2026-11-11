@@ -9,7 +9,7 @@ import { ECHO, ORIGIN, accessToken, connectArm, cookieFor, hub, mcpClient, newUs
 // verbatim (the link ends in /mcp, Claude Code's command says "mcp").
 const plain = (html: string) =>
   html
-    .replace(/<script>[\s\S]*?<\/script>/g, ' ')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/g, ' ')
     .replace(/<code>[\s\S]*?<\/code>/g, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/https?:\/\/\S+/g, ' ')

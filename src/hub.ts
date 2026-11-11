@@ -9,7 +9,19 @@ import { takeQuota } from './store';
 export const ARM_PROTOCOL = 'cloud-bridge.v1';
 const ARM_KINDS = /^[a-z][a-z0-9-]{0,23}$/;
 
+// The Activity page's live feed (/app/activity/live): a hibernatable socket of
+// its own kind, which never counts as an arm and whose messages are ignored.
+export const VIEWER = 'viewer';
+export const LIVE_PATH = '/app/activity/live';
+export const VIEWERS_MAX = 10;
+export const CATCH_UP_MAX = 200;
+interface ViewerAttachment {
+  viewer: true;
+  since: number;
+}
+
 interface Attachment {
+  viewer?: undefined;
   armId: string;
   userId?: string; // whose hub this is (absent on sockets from before it existed)
   // One per socket: a replaced connection's late close must not fail calls on its successor.
@@ -32,9 +44,38 @@ interface Pending {
 }
 
 export interface CallMeta {
-  client?: string;
+  client?: string; // the OAuth client id
+  clientName?: string; // its name when the user allowed it (absent on tokens from before D2)
   session?: string;
 }
+
+// What an arm may say about a call in its result's _meta, for the Activity page:
+// the command word and the site it acted on. The hub never parses arguments
+// for these (arm-agnostic) and never forwards _meta to the AI app.
+export const ACTIVITY_META = 'cloud-bridge/activity';
+export function reportedActivity(meta: unknown): { command: string | null; site: string | null } {
+  const a = meta && typeof meta === 'object' ? (meta as Record<string, unknown>)[ACTIVITY_META] : null;
+  const r = a && typeof a === 'object' ? (a as Record<string, unknown>) : {};
+  const command = typeof r.command === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(r.command) ? r.command : null;
+  const site = typeof r.site === 'string' && r.site.length <= 253 && /^[a-z0-9-]+(\.[a-z0-9-]+)*(:\d{1,5})?$/i.test(r.site) ? r.site.toLowerCase() : null;
+  return { command, site };
+}
+
+// One activity row as the Activity page shows it.
+export type ActivityView = {
+  id: number;
+  ts: number;
+  client: string | null;
+  clientName: string | null;
+  profile: string | null; // the arm's current name; null when none was reached or it was removed
+  profileGone: number; // 1: it reached an arm that's since been removed
+  tool: string;
+  command: string | null; // the arm's word for it (e.g. "snap"), when it said
+  site: string | null;
+  ok: number;
+  ms: number;
+  error: string | null; // the hub's own message; never an arm's
+};
 
 // MCP content blocks as arms send them (text, image, resource…), passed through untouched.
 export interface ContentBlock {
@@ -147,7 +188,11 @@ export class UserHub extends DurableObject<Env> {
     if (!columns.has('connects_since')) this.sql.exec('ALTER TABLE arms ADD COLUMN connects_since INTEGER');
     this.sql.exec(`CREATE TABLE IF NOT EXISTS activity(
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, session TEXT, client TEXT, arm_id TEXT, command TEXT NOT NULL,
-      target_host TEXT, ok INTEGER NOT NULL, ms INTEGER NOT NULL, error TEXT, result_ref TEXT)`);
+      target_host TEXT, ok INTEGER NOT NULL, ms INTEGER NOT NULL, error TEXT, result_ref TEXT, verb TEXT, client_name TEXT)`);
+    // Hubs made before the Activity page (D2): the arm's command word and the AI app's name.
+    const logged = new Set(this.sql.exec<{ name: string }>('PRAGMA table_info(activity)').toArray().map((c) => c.name));
+    if (!logged.has('verb')) this.sql.exec('ALTER TABLE activity ADD COLUMN verb TEXT');
+    if (!logged.has('client_name')) this.sql.exec('ALTER TABLE activity ADD COLUMN client_name TEXT');
     // When files were kept (the bytes live in KV): the daily cap counts these.
     this.sql.exec('CREATE TABLE IF NOT EXISTS files(ts INTEGER NOT NULL, size INTEGER NOT NULL)');
     // Whose hub this is: ctx.id.name when the caller used idFromName (every caller
@@ -247,8 +292,12 @@ export class UserHub extends DurableObject<Env> {
     return { arms, files: await deleteFiles(this.env.OAUTH_KV, userId) };
   }
 
-  // The /arm WebSocket upgrade, forwarded by the worker with the token in x-arm-token.
+  // The /arm WebSocket upgrade, forwarded by the worker with the token in x-arm-token;
+  // or the Activity page's live feed, forwarded only after its sign-in check (index.ts
+  // routes that path nowhere else, and /arm keeps its own path).
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === LIVE_PATH) return this.watch(Number(url.searchParams.get('after')) || 0);
     const token = request.headers.get('x-arm-token') ?? '';
     if (!this.has()) return refuse(request, 'unknown or revoked arm token: pair this arm again');
     const row = this.sql.exec<ArmRow>('SELECT * FROM arms WHERE token_hash = ?', await sha256(token)).toArray()[0];
@@ -273,6 +322,8 @@ export class UserHub extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, data: string | ArrayBuffer): Promise<void> {
+    // The Activity page only listens ("ping" is answered by the runtime).
+    if ((ws.deserializeAttachment() as ViewerAttachment | null)?.viewer) return;
     if (!this.has()) return ws.close(UNPAIRED, 'unknown or revoked arm token: pair this arm again');
     const att = ws.deserializeAttachment() as Attachment;
     let msg: { id?: string | number; method?: string; params?: Record<string, unknown>; result?: Record<string, unknown>; error?: { message?: string } };
@@ -314,8 +365,8 @@ export class UserHub extends DurableObject<Env> {
   // last heard at its last ping, not now: stamping now made a Chrome asleep all
   // night read "last seen 7s ago" to an AI app (found live, 2026-11-10).
   private gone(ws: WebSocket, why: string, seen = Date.now()): void {
-    const att = ws.deserializeAttachment() as Attachment | null;
-    if (!att) return;
+    const att = ws.deserializeAttachment() as Attachment | ViewerAttachment | null;
+    if (!att || att.viewer) return;
     if (this.has()) this.sql.exec('UPDATE arms SET last_seen = MAX(COALESCE(last_seen, 0), ?) WHERE id = ?', seen, att.armId);
     for (const [id, p] of this.pending) {
       if (p.connId !== att.connId) continue;
@@ -561,7 +612,7 @@ export class UserHub extends DurableObject<Env> {
       const isError = result.isError === true;
       // Never the arm's own error text: it can echo the command line (a chrome_batch
       // "$ fill … -- <secret>") or page content. Metadata only.
-      this.record(meta, arm.id, name, !isError, Date.now() - started, isError ? ARM_ERROR : null);
+      this.record(meta, arm.id, name, !isError, Date.now() - started, isError ? ARM_ERROR : null, reportedActivity(result._meta));
       return { content, isError };
     } catch (error) {
       const text = `The ${arm.kind} "${arm.name}" failed on ${name}: ${(error as Error).message}. The command may or may not have run: check the current state before retrying.`;
@@ -572,24 +623,91 @@ export class UserHub extends DurableObject<Env> {
     }
   }
 
-  // Metadata only: never arguments or results (opt-in result storage is D2).
-  private record(meta: CallMeta, armId: string | null, command: string, ok: boolean, ms: number, error: string | null): void {
+  // Metadata only: never arguments or results (opt-in kept details are D2b).
+  private record(meta: CallMeta, armId: string | null, command: string, ok: boolean, ms: number, error: string | null, report: { command: string | null; site: string | null } = { command: null, site: null }): void {
     // A call that waited on an arm while the account was deleted: nothing to keep.
     if (armId && !this.has()) return;
     this.ensure(); // a signed-in user's call: their hub may keep rows now
-    this.sql.exec(
-      'INSERT INTO activity(ts, session, client, arm_id, command, ok, ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      Date.now(),
-      meta.session ?? null,
-      meta.client ?? null,
-      armId,
-      command,
-      ok ? 1 : 0,
-      ms,
-      error ? error.slice(0, 500) : null,
-    );
+    const id = this.sql
+      .exec<{ id: number }>(
+        'INSERT INTO activity(ts, session, client, client_name, arm_id, command, verb, target_host, ok, ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
+        Date.now(),
+        meta.session ?? null,
+        meta.client ?? null,
+        meta.clientName?.slice(0, 100) || null,
+        armId,
+        command,
+        report.command,
+        report.site,
+        ok ? 1 : 0,
+        ms,
+        error ? error.slice(0, 500) : null,
+      )
+      .one().id;
     // Keeps the newest 5,000: CALLS_PER_DAY counts these rows, so it can't be higher.
     this.sql.exec('DELETE FROM activity WHERE ts < ? OR id <= (SELECT MAX(id) FROM activity) - 5000', Date.now() - 30 * 86400_000);
+    this.broadcast(this.activityWhere('a.id = ?', [id], 1));
+  }
+
+  // Open Activity pages get each row as it's written.
+  private broadcast(rows: ActivityView[]): void {
+    if (!rows.length) return;
+    const frame = JSON.stringify({ rows });
+    for (const ws of this.ctx.getWebSockets(VIEWER)) {
+      try {
+        ws.send(frame);
+      } catch {
+        // closing; the page reconnects and asks for what it missed
+      }
+    }
+  }
+
+  // GET /app/activity/live (signed in, the hub's own page): a hibernatable socket
+  // tagged VIEWER. It gets the rows after `after` (what the page missed while it
+  // loaded or reconnected; 0 for a page that had none), then each new one. The oldest page beyond VIEWERS_MAX closes.
+  private watch(after: number): Response {
+    const open = this.ctx.getWebSockets(VIEWER);
+    const extra = open.length - VIEWERS_MAX + 1;
+    if (extra > 0) {
+      const oldest = open.sort((a, b) => (a.deserializeAttachment() as ViewerAttachment).since - (b.deserializeAttachment() as ViewerAttachment).since);
+      for (const ws of oldest.slice(0, extra)) {
+        try {
+          ws.close(4000, 'Activity is open in too many tabs: this one stopped updating');
+        } catch {
+          // already closed
+        }
+      }
+    }
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server, [VIEWER]);
+    server.serializeAttachment({ viewer: true, since: Date.now() } satisfies ViewerAttachment);
+    // More missed than one frame should carry: the page reloads its rows instead
+    // of keeping a hole (it only pages backwards from its oldest row).
+    const missed = this.activityWhere('a.id > ?', [after], CATCH_UP_MAX + 1);
+    if (missed.length > CATCH_UP_MAX) server.send(JSON.stringify({ rows: [], reset: true }));
+    else if (missed.length) server.send(JSON.stringify({ rows: missed.reverse() }));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private activityWhere(where: string, params: unknown[], limit: number): ActivityView[] {
+    if (!this.has()) return [];
+    return this.sql
+      .exec<ActivityView>(
+        `SELECT a.id, a.ts, a.client, a.client_name AS clientName, r.name AS profile, (a.arm_id IS NOT NULL AND r.id IS NULL) AS profileGone,
+          a.command AS tool, a.verb AS command, a.target_host AS site, a.ok, a.ms, a.error
+        FROM activity a LEFT JOIN arms r ON r.id = a.arm_id WHERE ${where} ORDER BY a.id DESC LIMIT ?`,
+        ...params,
+        limit,
+      )
+      .toArray()
+      .map((row) => ({ ...row, error: row.error === ARM_ERROR ? null : row.error }));
+  }
+
+  // The Activity page: newest first, `limit` rows before the id `before` (0: the newest).
+  async activityRows(before = 0, limit = 300): Promise<{ rows: ActivityView[]; more: boolean }> {
+    const n = Math.max(1, Math.min(500, Math.floor(limit) || 300));
+    const rows = before > 0 ? this.activityWhere('a.id < ?', [before], n + 1) : this.activityWhere('1 = 1', [], n + 1);
+    return { rows: rows.slice(0, n), more: rows.length > n };
   }
 
   async recentActivity(limit = 50): Promise<ActivityRow[]> {
