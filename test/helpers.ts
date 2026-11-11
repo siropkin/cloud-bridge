@@ -1,4 +1,5 @@
 import { env, exports } from 'cloudflare:workers';
+import { runInDurableObject } from 'cloudflare:test';
 import { Client } from '@modelcontextprotocol/client';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { sessionCookie } from '../src/auth';
@@ -130,3 +131,13 @@ export async function connectArm(
 
 export const ECHO = { name: 'echo', description: 'Echo', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } };
 export const SNAP = { name: 'fake_snap', description: 'Fake snap', inputSchema: { type: 'object', properties: {} } };
+
+// The activity rows as stored (raw error text included), newest first: what the
+// hub keeps, not what the page shows.
+export function storedActivity(uid: string, limit = 50): Promise<{ ts: number; client: string | null; command: string; ok: number; error: string | null }[]> {
+  return runInDurableObject(env.USER_HUB.get(env.USER_HUB.idFromName(uid)), (_: unknown, state) =>
+    state.storage.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'activity'").toArray().length
+      ? (state.storage.sql.exec('SELECT ts, client, command, ok, error FROM activity ORDER BY id DESC LIMIT ?', limit).toArray() as never)
+      : [],
+  );
+}

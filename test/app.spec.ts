@@ -3,7 +3,7 @@ import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import type { UserHub } from '../src/hub';
 import { COPY_SCRIPT } from '../src/guide';
-import { ECHO, ORIGIN, accessToken, connectArm, cookieFor, hub, mcpClient, newUser, pairArm } from './helpers';
+import { ECHO, ORIGIN, accessToken, connectArm, cookieFor, hub, mcpClient, newUser, pairArm, storedActivity } from './helpers';
 
 // People never read "arm", "hub", "pair" or "MCP" here. <code> is what they copy
 // verbatim (the link ends in /mcp, Claude Code's command says "mcp").
@@ -246,7 +246,7 @@ describe('deleting your data', () => {
     }
     const filePath = new URL(file.result.url).pathname;
     expect((await hub(filePath, { headers: { Cookie: cookie } })).status).toBe(200);
-    expect(await stubOf(user.uid).recentActivity()).toHaveLength(1);
+    expect(await storedActivity(user.uid)).toHaveLength(1);
 
     const csrf = csrfOf(await (await hub('/app/delete', { headers: { Cookie: cookie } })).text());
     const res = await form('/app/delete', cookie, { csrf });
@@ -264,7 +264,7 @@ describe('deleting your data', () => {
     await expect(mcpClient(token)).rejects.toThrow();
     expect((await hub(filePath, { headers: { Cookie: cookie } })).status).toBe(404);
     expect(await env.OAUTH_KV.list({ prefix: `file:${user.uid}:` })).toMatchObject({ keys: [] });
-    expect(await stubOf(user.uid).recentActivity()).toEqual([]);
+    expect(await storedActivity(user.uid)).toEqual([]);
     await runInDurableObject(stubOf(user.uid), (_: UserHub, state) => {
       expect(state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf%' ESCAPE '\\' AND name NOT LIKE 'sqlite%'").toArray()).toEqual([]);
     });

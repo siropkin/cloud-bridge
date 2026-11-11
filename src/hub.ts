@@ -122,16 +122,6 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-export type ActivityRow = {
-  ts: number;
-  client: string | null;
-  arm_id: string | null;
-  command: string;
-  ok: number;
-  ms: number;
-  error: string | null;
-};
-
 // One connected arm as the account page shows it (no token, no tools).
 export interface ArmDetails {
   id: string;
@@ -213,17 +203,9 @@ export class UserHub extends DurableObject<Env> {
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, version TEXT, token_hash TEXT NOT NULL UNIQUE,
       created_at INTEGER NOT NULL, last_seen INTEGER, tools TEXT, selector TEXT, offline_hint TEXT,
       connects INTEGER, connects_since INTEGER)`);
-    // Hubs made before the connection count (S2a) get its columns on their next wake.
-    const columns = new Set(this.sql.exec<{ name: string }>('PRAGMA table_info(arms)').toArray().map((c) => c.name));
-    if (!columns.has('connects')) this.sql.exec('ALTER TABLE arms ADD COLUMN connects INTEGER');
-    if (!columns.has('connects_since')) this.sql.exec('ALTER TABLE arms ADD COLUMN connects_since INTEGER');
     this.sql.exec(`CREATE TABLE IF NOT EXISTS activity(
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, session TEXT, client TEXT, arm_id TEXT, command TEXT NOT NULL,
       target_host TEXT, ok INTEGER NOT NULL, ms INTEGER NOT NULL, error TEXT, result_ref TEXT, verb TEXT, client_name TEXT)`);
-    // Hubs made before the Activity page (D2): the arm's command word and the AI app's name.
-    const logged = new Set(this.sql.exec<{ name: string }>('PRAGMA table_info(activity)').toArray().map((c) => c.name));
-    if (!logged.has('verb')) this.sql.exec('ALTER TABLE activity ADD COLUMN verb TEXT');
-    if (!logged.has('client_name')) this.sql.exec('ALTER TABLE activity ADD COLUMN client_name TEXT');
     this.sql.exec('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, json TEXT NOT NULL)');
     // One row per step whose details were kept; dropped = removed to make room
     // (its content is gone, the row says so until the day is over).
@@ -232,14 +214,6 @@ export class UserHub extends DurableObject<Env> {
       image_too_big INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL, dropped INTEGER NOT NULL DEFAULT 0)`);
     // When files were kept (the bytes live in KV): the daily cap counts these.
     this.sql.exec('CREATE TABLE IF NOT EXISTS files(ts INTEGER NOT NULL, size INTEGER NOT NULL)');
-    this.sql.exec('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    // Rows from before plain notes (D2a) hold the AI app's text, which the
-    // Activity page would show people: clear it once (the page then says only
-    // that it didn't work).
-    if (!this.sql.exec("SELECT 1 FROM meta WHERE key = 'notes'").toArray().length) {
-      this.sql.exec('UPDATE activity SET error = NULL WHERE error IS NOT NULL AND error != ?', ARM_ERROR);
-      this.sql.exec("INSERT INTO meta(key, value) VALUES ('notes', '1')");
-    }
     this.schema = true;
   }
 
@@ -902,11 +876,6 @@ export class UserHub extends DurableObject<Env> {
     const n = Math.max(1, Math.min(500, Math.floor(limit) || 300));
     const rows = before > 0 ? this.activityWhere('a.id < ?', [before], n + 1) : this.activityWhere('1 = 1', [], n + 1);
     return { rows: rows.slice(0, n), more: rows.length > n };
-  }
-
-  async recentActivity(limit = 50): Promise<ActivityRow[]> {
-    if (!this.has()) return [];
-    return this.sql.exec<ActivityRow>('SELECT ts, client, arm_id, command, ok, ms, error FROM activity ORDER BY id DESC LIMIT ?', limit).toArray();
   }
 }
 

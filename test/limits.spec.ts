@@ -261,24 +261,6 @@ describe('arm connections per hour', () => {
     third.ws.close();
   });
 
-  it('a hub made before the count gets its columns on the next wake, and its arms keep connecting', async () => {
-    const name = `gh-old-${crypto.randomUUID()}`;
-    const stub = env.USER_HUB.get(env.USER_HUB.idFromName(name));
-    await runInDurableObject(stub, (_: UserHub, state) => {
-      state.storage.sql.exec(`CREATE TABLE arms(id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, version TEXT, token_hash TEXT NOT NULL UNIQUE,
-        created_at INTEGER NOT NULL, last_seen INTEGER, tools TEXT, selector TEXT, offline_hint TEXT)`);
-    });
-    const { token } = await stub.createArm(name, 'fake', 'elm');
-    const cols = await runInDurableObject(stub, (_: UserHub, state) => state.storage.sql.exec<{ name: string }>('PRAGMA table_info(arms)').toArray().map((c) => c.name));
-    expect(cols).toEqual(expect.arrayContaining(['connects', 'connects_since']));
-    const a = await connectArm(token, { name: 'elm', tools: [ECHO] });
-    await a.ready;
-    expect((await connects(stub)).connects).toBe(1);
-    a.ws.close();
-  });
-});
-
-describe('file links for everyone per day (KV writes)', () => {
   it(`stops at ${FILES_PER_DAY_ALL} a UTC day for all accounts together, and the refused file doesn't count against the account`, async () => {
     const user = newUser();
     const { token } = await pairArm(await cookieFor(user), 'chrome', 'poplar');

@@ -6,7 +6,7 @@ import { oauthKv } from '../src/store';
 import type { UserHub } from '../src/hub';
 import { describe, expect, it } from 'vitest';
 import { COPY_SCRIPT } from '../src/guide';
-import { accessToken, connectArm, cookieFor, ECHO, hub, mcpClient, newUser, ORIGIN, pairArm, SNAP } from './helpers';
+import { accessToken, connectArm, cookieFor, ECHO, hub, mcpClient, newUser, ORIGIN, pairArm, SNAP, storedActivity } from './helpers';
 
 // What a hub with no Chrome paired lists (synced from chrome-bridge).
 const CHROME = chromeTools.map((t) => t.name);
@@ -307,10 +307,20 @@ describe('MCP through OAuth to arms', () => {
     expect(text(res)).toBe('echo:hi');
     const call = arm.received.find((m) => m.method === 'tools/call')!;
     expect(call.params).toMatchObject({ name: 'echo', arguments: { text: 'hi' } });
-    const hubStub = env.USER_HUB.get(env.USER_HUB.idFromName(user.uid));
-    const [row] = await hubStub.recentActivity(1);
+    const [row] = await storedActivity(user.uid, 1);
     expect(row).toMatchObject({ command: 'fake_echo', ok: 1 });
     expect(row.client).toBeTruthy();
+    arm.ws.close();
+  });
+  it('a hub keeps exactly its current tables, made once with every column (no migrations, no meta)', async () => {
+    const user = newUser();
+    const { token } = await pairArm(await cookieFor(user), 'fake', 'birch');
+    const arm = await connectArm(token, { name: 'birch', tools: [ECHO] });
+    await arm.ready;
+    const tables = await runInDurableObject(env.USER_HUB.get(env.USER_HUB.idFromName(user.uid)), (_: UserHub, state) =>
+      state.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf%' ESCAPE '\\' AND name NOT LIKE 'sqlite%' ORDER BY name").toArray().map((r) => r.name),
+    );
+    expect(tables).toEqual(['activity', 'arms', 'details', 'files', 'settings']);
     arm.ws.close();
   });
   it('activity never stores the arm\'s error text, which can echo arguments', async () => {
@@ -322,7 +332,7 @@ describe('MCP through OAuth to arms', () => {
     const client = await mcpClient(await accessToken(cookie));
     const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hunter2' } });
     expect(text(res)).toContain('hunter2'); // the caller still gets the arm's answer
-    const [row] = await env.USER_HUB.get(env.USER_HUB.idFromName(user.uid)).recentActivity(1);
+    const [row] = await storedActivity(user.uid, 1);
     expect(row).toMatchObject({ command: 'fake_echo', ok: 0, error: 'the arm reported an error' });
     expect(JSON.stringify(row)).not.toContain('hunter2');
     arm.ws.close();
@@ -341,7 +351,7 @@ describe('MCP through OAuth to arms', () => {
     const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hunter2' } });
     expect(res.isError).toBe(true);
     expect(text(res)).toContain('hunter2');
-    const [row] = await env.USER_HUB.get(env.USER_HUB.idFromName(user.uid)).recentActivity(1);
+    const [row] = await storedActivity(user.uid, 1);
     expect(row).toMatchObject({ command: 'fake_echo', ok: 0, error: 'the arm reported an error' });
     expect(JSON.stringify(row)).not.toContain('hunter2');
     arm.ws.close();
