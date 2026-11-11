@@ -26,10 +26,13 @@ const plain = (html: string) => html.replace(/<[^>]+>/g, ' ');
 
 // Miniflare's limiter counts in windows aligned to the clock: start a flood
 // well inside one, or a rollover mid-test resets the count.
+// A test that calls it can wait up to 8 s here, past vitest's 5 s default:
+// give it WINDOW_TIMEOUT (a run landing in a minute's last seconds timed out).
 async function windowStart(): Promise<void> {
   const left = 60_000 - (Date.now() % 60_000);
   if (left < 8000) await sleep(left + 50);
 }
+const WINDOW_TIMEOUT = 20_000;
 
 let ips = 0;
 const freshIp = () => `198.51.100.${++ips}`;
@@ -126,7 +129,7 @@ describe('per-network limits on the routes anyone can call', () => {
       await route.check(res);
       // Another network isn't affected.
       expect((await route.send(freshIp())).status).not.toBe(429);
-    });
+    }, WINDOW_TIMEOUT);
   }
 
   it('the routes count separately, and hosts in one IPv6 /64 share a count', async () => {
@@ -135,7 +138,7 @@ describe('per-network limits on the routes anyone can call', () => {
     for (let i = 0; i < 10; i++) expect((await start(`2001:db8:5:${ips}::${i + 1}`)).status).toBe(200);
     expect((await start(`2001:db8:5:${ips}:ffff::9`)).status).toBe(429);
     expect((await hub('/login', from(`2001:db8:5:${ips}::1`, { redirect: 'manual' }))).status).toBe(302);
-  });
+  }, WINDOW_TIMEOUT);
 
   it("doesn't count requests that didn't come through Cloudflare's edge (no CF-Connecting-IP: tests, in-process)", async () => {
     for (let i = 0; i < 12; i++) expect((await hub('/pair/start', { method: 'POST', headers: json, body: '{"kind":"chrome","name":"oak"}' })).status).toBe(200);
