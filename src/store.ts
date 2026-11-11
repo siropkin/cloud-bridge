@@ -17,12 +17,6 @@ import { DurableObject } from 'cloudflare:workers';
 // rest spread over SHARDS objects by a hash of the key.
 export const SHARDS = 8;
 const USER_KEY = /^(?:grant|token):([^:]+):/;
-// Keys written to KV before the move. Read once from there, then moved here;
-// every one has expired by LEGACY_UNTIL (the longest-lived, a client record,
-// had 89.9 days left on 2026-11-09), so after it KV isn't consulted at all.
-const LEGACY = /^(?:client|grant|token):/;
-const LEGACY_UNTIL = Date.UTC(2027, 1, 8);
-const legacyKey = (name: string, now = Date.now()) => now < LEGACY_UNTIL && LEGACY.test(name);
 // Expired rows are invisible at once and deleted in batches this far apart.
 const SWEEP_MS = 15 * 60_000;
 
@@ -79,7 +73,7 @@ export class OAuthStore extends DurableObject<Env> {
     this.has(true);
     this.sql.exec('INSERT OR REPLACE INTO kv(name, value, metadata, expires) VALUES (?, ?, ?, ?)', name, value, metadata, expires);
     if (expires === null) return;
-    // Earlier, never later: a shard whose next sweep is a moved client record's
+    // Earlier, never later: a shard whose next sweep is a client record's
     // expiry months out would keep every short-lived row (pairing place, token) that long.
     const sweep = Math.max(expires, Date.now()) + SWEEP_MS;
     const alarm = await this.ctx.storage.getAlarm();
@@ -154,51 +148,12 @@ type ListOptions = { prefix?: string; limit?: number; cursor?: string | null };
 // the Worker). Text values only: the library stores JSON strings, files stay in KV.
 export function oauthKv(env: Env): KVNamespace {
   const stub = (shard: string) => env.OAUTH_STORE.get(env.OAUTH_STORE.idFromName(shard));
-  const legacy = env.OAUTH_KV;
-
-  // A key written before the move: moved here with its expiry and metadata (grants
-  // carry metadata the library lists by), then deleted from KV. If that delete
-  // fails, so does this request: a copy left in KV would answer again after a
-  // revoke here (review).
-  async function move(name: string, value: string, listed?: { expiration?: number; metadata?: unknown }): Promise<void> {
-    const at = listed ?? (await legacy.list({ prefix: name, limit: 10 })).keys.find((k) => k.name === name);
-    await stub(shardOf(name)).put(name, value, at?.metadata == null ? null : JSON.stringify(at.metadata), at?.expiration ? at.expiration * 1000 : null);
-    try {
-      await legacy.delete(name);
-    } catch (error) {
-      await stub(shardOf(name)).delete(name);
-      throw error;
-    }
-  }
-
-  async function fromLegacy(name: string): Promise<string | null> {
-    if (!legacyKey(name)) return null;
-    const value = await legacy.get(name, 'text');
-    if (value === null) return null;
-    await move(name, value);
-    return value;
-  }
-
-  // One user's grants or tokens from before the move, moved before they're
-  // listed: the library finds the grants to revoke on re-authorization by
-  // listing, and an unmoved one was skipped, then woke up on its next read (review).
-  async function moveListed(prefix: string): Promise<void> {
-    let cursor: string | undefined;
-    do {
-      const page = await legacy.list({ prefix, cursor });
-      for (const k of page.keys) {
-        const value = await legacy.get(k.name, 'text');
-        if (value !== null) await move(k.name, value, k);
-      }
-      cursor = page.list_complete ? undefined : page.cursor;
-    } while (cursor);
-  }
 
   const store = {
     async get(name: string, options?: GetOptions): Promise<unknown> {
       const type = (typeof options === 'string' ? options : options?.type) ?? 'text';
       if (type !== 'text' && type !== 'json') throw new Error(`the hub's OAuth store keeps text; get(${type}) isn't supported`);
-      const value = (await stub(shardOf(name)).get(name))?.value ?? (await fromLegacy(name));
+      const value = (await stub(shardOf(name)).get(name))?.value ?? null;
       return value === null ? null : type === 'json' ? JSON.parse(value) : value;
     },
     async put(name: string, value: unknown, options: PutOptions = {}): Promise<void> {
@@ -208,20 +163,9 @@ export function oauthKv(env: Env): KVNamespace {
     },
     async delete(name: string): Promise<void> {
       await stub(shardOf(name)).delete(name);
-      // A copy still in KV (never read since the move) must not answer after this.
-      // Only a key KV really holds is deleted there: its writes are scarce.
-      if (legacyKey(name) && (await legacy.get(name, 'text')) !== null) await legacy.delete(name);
     },
     async list(options: ListOptions = {}): Promise<{ keys: { name: string; metadata?: unknown; expiration?: number }[]; list_complete: boolean; cursor?: string; cacheStatus: null }> {
       const prefix = options.prefix ?? '';
-      if (!options.cursor && USER_KEY.test(prefix) && legacyKey(prefix)) {
-        try {
-          await moveListed(prefix);
-        } catch (error) {
-          // KV's own daily list/delete budget is spent: answer from here rather than fail every sign-in.
-          console.error('store: moving legacy keys failed', prefix.split(':')[0], (error as Error).message);
-        }
-      }
       const limit = Math.min(Math.max(1, options.limit ?? 1000), 1000);
       const pages = await Promise.all(shardsFor(prefix).map((s) => stub(s).list(prefix, limit + 1, options.cursor ?? '')));
       const keys = pages.flat().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

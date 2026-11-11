@@ -41,62 +41,15 @@ describe('OAuth and sign-in state live in Durable Objects, not KV (S1: free KV t
     expect(await tables(storeOf(`token:${uid}:g1:x`))).toEqual([]);
   });
 
-  it('a key from before the move is served once from KV, then moved with its expiry and metadata', async () => {
+  it('never reads OAuth state from KV: a grant, token or client there is not served, listed or touched (decision no-legacy)', async () => {
     const store = oauthKv(env);
-    const name = `grant:gh-legacy-${crypto.randomUUID()}:g1`;
-    const expiration = Math.floor(Date.now() / 1000) + 7200;
-    await env.OAUTH_KV.put(name, JSON.stringify({ id: 'g1' }), { expiration, metadata: { clientId: 'c1' } });
-    expect(await store.get(name, { type: 'json' })).toEqual({ id: 'g1' });
-    expect(await env.OAUTH_KV.get(name)).toBeNull();
-    const listed = await store.list({ prefix: name.slice(0, name.lastIndexOf(':') + 1) });
-    expect(listed.keys).toEqual([{ name, expiration, metadata: { clientId: 'c1' } }]);
-    // Deleting it here is final: KV no longer answers for it.
-    await store.delete(name);
-    expect(await store.get(name)).toBeNull();
-  });
-
-  it('a client registered before the move still connects (Claude\'s and ChatGPT\'s records were in KV)', async () => {
-    const redirect = 'https://legacy.example/cb';
-    const reg = (await (await hub('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ redirect_uris: [redirect], client_name: 'Legacy app', token_endpoint_auth_method: 'none' }) })).json()) as any;
-    const name = `client:${reg.client_id}`;
-    // Put it back where the old hub kept it: in KV only.
-    await env.OAUTH_KV.put(name, (await oauthKv(env).get(name)) as string);
-    expect(await storeOf(name).delete(name)).toBe(true);
-    const q = new URLSearchParams({ response_type: 'code', client_id: reg.client_id, redirect_uri: redirect, code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', resource: env.MCP_RESOURCE });
-    const consent = await hub(`/authorize?${q}`, { headers: { Cookie: await cookieFor(newUser()) } });
-    expect(await consent.text()).toContain('Allow Legacy app to use your Chrome?');
-    expect(await env.OAUTH_KV.get(name)).toBeNull();
-    expect((await storeOf(name).get(name))?.value).toContain(reg.client_id);
-  });
-
-  it('a user\'s grants from before the move are listed (re-authorizing revokes them by listing), then live here only (review)', async () => {
-    const store = oauthKv(env);
-    const uid = `gh-legacy-${crypto.randomUUID()}`;
-    const expiration = Math.floor(Date.now() / 1000) + 7200;
-    for (const g of ['g1', 'g2']) await env.OAUTH_KV.put(`grant:${uid}:${g}`, JSON.stringify({ id: g }), { expiration, metadata: { clientId: 'c1' } });
-    await store.put(`grant:${uid}:g3`, '{"id":"g3"}');
-    const listed = await store.list({ prefix: `grant:${uid}:` });
-    expect(listed.keys.map((k) => k.name)).toEqual([`grant:${uid}:g1`, `grant:${uid}:g2`, `grant:${uid}:g3`]);
-    expect(listed.keys[0]).toEqual({ name: `grant:${uid}:g1`, expiration, metadata: { clientId: 'c1' } });
-    expect((await env.OAUTH_KV.list({ prefix: `grant:${uid}:` })).keys).toEqual([]);
-  });
-
-  it('a deleted key never comes back from KV, and a move whose KV delete fails fails the read (review)', async () => {
-    const uid = `gh-legacy-${crypto.randomUUID()}`;
-    const name = `grant:${uid}:g1`;
-    // A copy in KV beside a newer one here (a move whose KV delete was lost): delete removes both.
-    await env.OAUTH_KV.put(name, '{"v":0}');
-    await storeOf(name).put(name, '{"v":1}', null, null);
-    const store = oauthKv(env);
-    await store.delete(name);
-    expect(await store.get(name)).toBeNull();
-    expect(await env.OAUTH_KV.get(name)).toBeNull();
-    // KV refuses the delete during a move: the read fails, nothing is kept here, KV still answers next time.
-    await env.OAUTH_KV.put(name, '{"v":0}');
-    const failing = oauthKv({ ...env, OAUTH_KV: { get: (n: string, t: any) => env.OAUTH_KV.get(n, t), list: (o: any) => env.OAUTH_KV.list(o), delete: async () => { throw new Error('KV delete limit exceeded'); } } as unknown as KVNamespace });
-    await expect(failing.get(name)).rejects.toThrow('KV delete limit exceeded');
-    expect(await storeOf(name).get(name)).toBeNull();
-    expect(await store.get(name)).toBe('{"v":0}');
+    const uid = `gh-kv-${crypto.randomUUID()}`;
+    const names = [`grant:${uid}:g1`, `token:${uid}:g1:t`, `client:${crypto.randomUUID()}`];
+    for (const name of names) await env.OAUTH_KV.put(name, '{"id":"x"}', { metadata: { clientId: 'c1' } });
+    for (const name of names) expect(await store.get(name)).toBeNull();
+    expect((await store.list({ prefix: `grant:${uid}:` })).keys).toEqual([]);
+    await store.delete(names[0]);
+    for (const name of names) expect(await env.OAUTH_KV.get(name)).toBe('{"id":"x"}');
   });
 
   it('expired entries read as gone at once and are swept by the alarm', async () => {
