@@ -338,6 +338,25 @@ describe('MCP through OAuth to arms', () => {
     expect(JSON.stringify(row)).not.toContain('hunter2');
     arm.ws.close();
   });
+  it("activity doesn't keep an arm's JSON-RPC error message either; the caller still gets it", async () => {
+    const user = newUser();
+    const cookie = await cookieFor(user);
+    const { token } = await pairArm(cookie, 'fake', 'birch');
+    const arm = await connectArm(token, { name: 'birch', tools: [ECHO], onCall: () => undefined });
+    await arm.ready;
+    arm.ws.addEventListener('message', (e) => {
+      const msg = e.data === 'pong' ? null : JSON.parse(e.data as string);
+      if (msg?.method === 'tools/call') arm.ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: `$ fill x @e5 -- ${msg.params.arguments.text}` } }));
+    });
+    const client = await mcpClient(await accessToken(cookie));
+    const res = await client.callTool({ name: 'fake_echo', arguments: { text: 'hunter2' } });
+    expect(res.isError).toBe(true);
+    expect(text(res)).toContain('hunter2');
+    const [row] = await env.USER_HUB.get(env.USER_HUB.idFromName(user.uid)).recentActivity(1);
+    expect(row).toMatchObject({ command: 'fake_echo', ok: 0, error: 'the arm reported an error' });
+    expect(JSON.stringify(row)).not.toContain('hunter2');
+    arm.ws.close();
+  });
   it('another user sees none of these arms', async () => {
     const owner = await cookieFor(newUser());
     const { token } = await pairArm(owner, 'fake', 'birch');

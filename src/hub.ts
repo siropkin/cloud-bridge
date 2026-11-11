@@ -341,7 +341,7 @@ export class UserHub extends DurableObject<Env> {
       if (!p) return;
       this.pending.delete(String(msg.id));
       clearTimeout(p.timer);
-      if (msg.error) p.reject(new Error(msg.error.message ?? 'the arm returned an error'));
+      if (msg.error) p.reject(new ArmAnswer(msg.error.message ?? 'the arm returned an error'));
       else p.resolve(msg.result ?? {});
       return;
     }
@@ -616,7 +616,8 @@ export class UserHub extends DurableObject<Env> {
       return { content, isError };
     } catch (error) {
       const text = `The ${arm.kind} "${arm.name}" failed on ${name}: ${(error as Error).message}. The command may or may not have run: check the current state before retrying.`;
-      this.record(meta, arm.id, name, false, Date.now() - started, (error as Error).message);
+      // The hub's own words (timeout, dropped connection) are kept; an arm's are not.
+      this.record(meta, arm.id, name, false, Date.now() - started, error instanceof ArmAnswer ? ARM_ERROR : (error as Error).message);
       return { content: [{ type: 'text', text }], isError: true };
     } finally {
       this.calling--; // in the same step as its activity row: the count never sees it twice or not at all
@@ -718,3 +719,7 @@ export class UserHub extends DurableObject<Env> {
 
 // Stored instead of an arm's error text (which may carry arguments or page content).
 export const ARM_ERROR = 'the arm reported an error';
+
+// A JSON-RPC error the arm answered with: its message is the arm's text, so the
+// caller may read it but activity must not keep it (as with isError results).
+class ArmAnswer extends Error {}
