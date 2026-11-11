@@ -1,8 +1,9 @@
 // /app/settings: what AI apps may do in each Chrome profile (decision d3-design).
-// Each command Allow or Off, from the list the profile itself sent (arm/hello
+// Each command Allow, Ask or Off, from the list the profile itself sent (arm/hello
 // registry), and the websites AI apps can't use there at all. Rules are kept per
 // profile; the hub tells the profile at once, hides an Off command's tools from
-// AI apps and refuses them (src/tools.ts). Plain HTML form, no script.
+// AI apps and refuses them (src/tools.ts). Ask is the profile's to enforce: it
+// asks the person on their computer before each such step. Plain HTML form, no script.
 import { requireSession, type HubEnv } from './auth';
 import { back, csrfFor, formFor, hidden, hubOf } from './app';
 import { BLOCKED_MAX, type ProfileSettings } from './hub';
@@ -59,9 +60,9 @@ function rulesForm(p: ProfileSettings, csrf: string): string {
   for (const e of p.registry) groups.set(e.group, [...(groups.get(e.group) ?? []), e]);
   const sections = [...groups].map(([group, entries]) => {
     const rows = entries.map((e) => {
-      const off = p.rules.commands[e.name] === 'off';
-      const radio = (value: string, label: string, on: boolean) => `<label><input type="radio" name="c:${e.name}" value="${value}"${on ? ' checked' : ''}> ${label}</label>`;
-      return `<div class="rule"><span>${escapeHtml(e.title)}<span class="word">${e.name}</span></span><span class="choice" role="radiogroup" aria-label="${escapeHtml(e.title)}">${radio('allow', 'Allow', !off)}${radio('off', 'Off', off)}</span></div>`;
+      const rule = Object.hasOwn(p.rules.commands, e.name) ? p.rules.commands[e.name] : 'allow';
+      const radio = (value: string, label: string) => `<label><input type="radio" name="c:${e.name}" value="${value}"${rule === value ? ' checked' : ''}> ${label}</label>`;
+      return `<div class="rule"><span>${escapeHtml(e.title)}<span class="word">${e.name}</span></span><span class="choice" role="radiogroup" aria-label="${escapeHtml(e.title)}">${radio('allow', 'Allow')}${radio('ask', 'Ask')}${radio('off', 'Off')}</span></div>`;
     });
     return `<section><h2>${escapeHtml(group)}</h2>\n${rows.join('\n')}</section>`;
   });
@@ -101,13 +102,13 @@ export async function settingsPage(request: Request, env: HubEnv): Promise<Respo
   return page(
     'What AI apps may do in your Chrome',
     `${head}
-${flash}<p>Choose what AI apps may do in each Chrome profile. Everything is allowed until you change it here. When something is off, AI apps are told so and do the task without it.</p>
+${flash}<p>Choose what AI apps may do in each Chrome profile. Everything is allowed until you change it here. <strong>Ask</strong> shows a small chrome-bridge window in that Chrome each time, with Allow once and Deny; no answer within 45 seconds counts as Deny. When something is off or you deny it, AI apps are told so and do the task without it.</p>
 ${others}<h2>${escapeHtml(armLabel(chosen.kind, chosen.name))}</h2>
 ${rulesForm(chosen, csrf)}`,
   );
 }
 
-// POST /app/settings {csrf, profile, c:<command>=allow|off…, blocked}
+// POST /app/settings {csrf, profile, c:<command>=allow|ask|off…, blocked}
 export async function saveSettings(request: Request, env: HubEnv): Promise<Response> {
   const got = await formFor(request, env, '/app/settings');
   if (got instanceof Response) return got;

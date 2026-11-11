@@ -67,8 +67,10 @@ describe('the settings page (/app/settings)', () => {
     expect(html.match(/<section><h2>([^<]+)<\/h2>/g)).toEqual(['<section><h2>Reading pages</h2>', '<section><h2>Acting on pages</h2>', '<section><h2>Running code in pages</h2>', "<section><h2>Websites AI apps can't use</h2>"]);
     expect(html).toContain('<span>Read a page&#39;s text and controls<span class="word">snap</span></span>');
     expect(html).toContain('<input type="radio" name="c:snap" value="allow" checked> Allow');
+    expect(html).toContain('<input type="radio" name="c:snap" value="ask"> Ask');
     expect(html).toContain('<input type="radio" name="c:snap" value="off"> Off');
-    expect(html).not.toMatch(/value="off" checked/);
+    expect(html).not.toMatch(/value="(off|ask)" checked/);
+    expect(html).toContain('<strong>Ask</strong> shows a small chrome-bridge window in that Chrome each time, with Allow once and Deny; no answer within 45 seconds counts as Deny.');
     expect(plain(html)).not.toMatch(JARGON);
     expect(await (await hub('/app', { headers: { Cookie: cookie } })).text()).toContain('<a href="/app/settings">Choose what AI apps may do in each Chrome profile →</a>');
     arm.ws.close();
@@ -115,6 +117,28 @@ describe('the settings page (/app/settings)', () => {
     arm.ws.close();
   });
 
+  it("Ask: the profile hears it and asks the person itself; the hub keeps the tool listed and passes the call with the AI app's name", async () => {
+    const { user, cookie } = await signedIn();
+    const calls: any[] = [];
+    const { arm } = await chrome(cookie, 'poplar', 'inst-poplar-0005', calls);
+    const id = await idOf(user.uid, 'poplar');
+    const csrf = csrfOf(await settingsHtml(cookie));
+    await form(cookie, { csrf, profile: id, 'c:snap': 'ask', 'c:eval': 'ask', 'c:click': 'off', blocked: '' });
+    await until(() => policies(arm).length === 2);
+    expect(policies(arm)[1].commands).toEqual({ snap: 'ask', eval: 'ask', click: 'off' });
+    const html = await settingsHtml(cookie, `?profile=${id}`);
+    expect(html).toContain('<input type="radio" name="c:snap" value="ask" checked> Ask');
+    expect(html).toContain('<input type="radio" name="c:snap" value="allow"> Allow');
+    expect(html).toContain('<input type="radio" name="c:click" value="off" checked> Off');
+    const client = await mcpClient(await accessToken(cookie));
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(['chrome', 'chrome_snap']);
+    expect((await client.callTool({ name: 'chrome_snap', arguments: { tab: 'github' } })).isError).toBeFalsy();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]._meta).toMatchObject({ clientName: 'Test client' });
+    expect(typeof calls[0]._meta.client).toBe('string');
+    arm.ws.close();
+  });
+
   it('rules belong to the Chrome profile: they survive turning Cloud AI apps off and on, and another profile keeps its own', async () => {
     const { user, cookie } = await signedIn();
     const first = await chrome(cookie, 'poplar', 'inst-poplar-0003');
@@ -156,14 +180,14 @@ describe('the settings page (/app/settings)', () => {
     hazel.arm.ws.close();
   });
 
-  it('keeps only commands the profile listed, only Allow or Off; a forged form or another account changes nothing', async () => {
+  it('keeps only commands the profile listed, only Allow, Ask or Off; a forged form or another account changes nothing', async () => {
     const { user, cookie } = await signedIn();
     const { arm } = await chrome(cookie, 'poplar', 'inst-poplar-0004');
     const id = await idOf(user.uid, 'poplar');
     const csrf = csrfOf(await settingsHtml(cookie));
-    await form(cookie, { csrf, profile: id, 'c:nope': 'off', 'c:click': 'sometimes', 'c:__proto__': 'off', 'c:eval': 'off' });
+    await form(cookie, { csrf, profile: id, 'c:nope': 'ask', 'c:click': 'sometimes', 'c:snap': 'ASK', 'c:__proto__': 'off', 'c:constructor': 'ask', 'c:eval': 'off', 'c:tabs': 'ask' });
     await until(() => policies(arm).length === 2);
-    expect(policies(arm)[1].commands).toEqual({ eval: 'off' });
+    expect(policies(arm)[1].commands).toEqual({ eval: 'off', tabs: 'ask' });
     // No token, or posted from another site: refused before anything is read.
     for (const [fields, headers] of [[{ profile: id, 'c:snap': 'off' }, {}], [{ csrf, profile: id, 'c:snap': 'off' }, { 'Sec-Fetch-Site': 'cross-site' }]] as const) {
       const res = await form(cookie, fields, headers);

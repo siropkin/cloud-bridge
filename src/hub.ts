@@ -159,9 +159,12 @@ export function validRegistry(value: unknown): RegistryEntry[] {
 
 // The person's rules for one Chrome profile (decision d3-design: per profile).
 // Kept under the profile's own id (arm/hello `instanceId`), not the arm record,
-// so turning Cloud AI apps off and on (a new record) keeps them.
+// so turning Cloud AI apps off and on (a new record) keeps them. 'ask': the arm
+// asks the person on their computer before each such step; the hub lists and
+// passes it like Allow.
+export type Rule = 'off' | 'ask';
 export interface Rules {
-  commands: Record<string, 'off'>;
+  commands: Record<string, Rule>;
   blockedDomains: string[];
 }
 export const BLOCKED_MAX = 200;
@@ -543,17 +546,17 @@ export class UserHub extends DurableObject<Env> {
   }
 
   // Saves a profile's rules from the settings page: only commands it listed,
-  // only Allow (nothing kept) or Off. Every connected arm of that profile hears
-  // them at once; AI apps' next tools/list leaves out what's Off.
+  // only Allow (nothing kept), Ask or Off. Every connected arm of that profile
+  // hears them at once; AI apps' next tools/list leaves out what's Off.
   async saveRules(armId: string, commands: Record<string, string>, blockedDomains: string[]): Promise<'ok' | 'gone'> {
     if (!this.has() || !this.sql.exec('SELECT 1 FROM arms WHERE id = ?', armId).toArray().length) return 'gone';
     const profile = this.armProfile(armId);
     if (!profile?.rules || !profile.registry.length) return 'gone';
     const listed = new Set(profile.registry.map((e) => e.name));
-    const off: Record<string, 'off'> = {};
-    for (const [name, rule] of Object.entries(commands)) if (listed.has(name) && rule === 'off') off[name] = 'off';
-    const rules: Rules = { commands: off, blockedDomains: blockedDomains.slice(0, BLOCKED_MAX) };
-    if (Object.keys(off).length || rules.blockedDomains.length) this.sql.exec('INSERT OR REPLACE INTO settings(key, json) VALUES (?, ?)', `rules:${profile.rules}`, JSON.stringify(rules));
+    const set: Record<string, Rule> = {};
+    for (const [name, rule] of Object.entries(commands)) if (listed.has(name) && (rule === 'off' || rule === 'ask')) set[name] = rule;
+    const rules: Rules = { commands: set, blockedDomains: blockedDomains.slice(0, BLOCKED_MAX) };
+    if (Object.keys(set).length || rules.blockedDomains.length) this.sql.exec('INSERT OR REPLACE INTO settings(key, json) VALUES (?, ?)', `rules:${profile.rules}`, JSON.stringify(rules));
     else this.sql.exec('DELETE FROM settings WHERE key = ?', `rules:${profile.rules}`);
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() as Attachment | ViewerAttachment | null;
@@ -755,7 +758,8 @@ export class UserHub extends DurableObject<Env> {
     if (!ws) return { content: [{ type: 'text', text: `The ${arm.kind} "${arm.name}" just went offline. Call this tool again in a few seconds.` }], isError: true };
     this.calling++;
     try {
-      const result = await this.request(ws, (ws.deserializeAttachment() as Attachment).connId, 'tools/call', { name: tool, arguments: resolved.args, _meta: { client: meta.client, session: meta.session } });
+      // clientName: the name the person allowed the app under, for an arm that asks them first ("Claude wants to…").
+      const result = await this.request(ws, (ws.deserializeAttachment() as Attachment).connId, 'tools/call', { name: tool, arguments: resolved.args, _meta: { client: meta.client, clientName: meta.clientName, session: meta.session } });
       const content = Array.isArray(result.content) ? (result.content as ToolResult['content']) : [{ type: 'text', text: JSON.stringify(result) }];
       const isError = result.isError === true;
       // Never the arm's own error text: it can echo the command line (a chrome_batch
