@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { ACTIVITY_META, CATCH_UP_MAX, VIEWERS_MAX, type ActivityView, type UserHub } from '../src/hub';
+import { ACTIVITY_META, CATCH_UP_MAX, DETAILS_CAP, DETAILS_MS, IMAGE_MAX, VIEWERS_MAX, type ActivityView, type UserHub } from '../src/hub';
 import { ECHO, ORIGIN, accessToken, connectArm, cookieFor, hub, mcpClient, newUser, pairArm } from './helpers';
 
 const stubOf = (uid: string) => env.USER_HUB.get(env.USER_HUB.idFromName(uid));
@@ -307,9 +307,195 @@ describe('the account page', () => {
 
   it('a row can never close the data block early', async () => {
     const { activityData } = await import('../src/activity');
-    const html = activityData('full', [{ id: 1, ts: 1, client: '</script><script>alert(1)</script>', clientName: null, profile: null, profileGone: 0, tool: 't', command: null, site: null, ok: 1, ms: 1, error: null }], false, {});
+    const html = activityData('full', [{ id: 1, ts: 1, client: '</script><script>alert(1)</script>', clientName: null, profile: null, profileGone: 0, tool: 't', command: null, site: null, ok: 1, ms: 1, error: null, details: 0 }], false, {});
     expect(html.match(/<\/script>/g)).toHaveLength(1);
     expect(JSON.parse(/>([\s\S]*)<\/script>$/.exec(html)![1]).rows[0].client).toContain('</script>');
+  });
+});
+
+// Keep details for 24 hours (D2b2): the arm's line + preview and the result's first image.
+const form = (path: string, cookie: string, fields: Record<string, string>, headers: Record<string, string> = {}) =>
+  hub(path, { method: 'POST', redirect: 'manual', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin', ...headers }, body: new URLSearchParams(fields) });
+const pageHtml = async (cookie: string, query = '') => (await hub(`/app/activity${query}`, { headers: { Cookie: cookie } })).text();
+const csrfOn = async (cookie: string) => /name="csrf" value="([^"]+)"/.exec(await pageHtml(cookie))![1];
+const keep = async (cookie: string, on: boolean) => form('/app/activity/keep', cookie, { csrf: await csrfOn(cookie), on: on ? '1' : '0' });
+const PNG = btoa('\x89PNG fake bytes');
+const details = async (cookie: string, id: number) => hub(`/app/activity/details?id=${id}`, { headers: { Cookie: cookie } });
+// What chrome-bridge 1.34.7 sends: the redacted line and its own preview.
+const reporting = (line: string, preview: string, extra: unknown[] = []) => () => ({
+  content: [{ type: 'text', text: `$ ${line.replace('"***"', 'hunter2')}\nfilled hunter2` }, ...extra],
+  _meta: { [ACTIVITY_META]: { command: 'fill', site: 'shop.test', line, preview } },
+});
+
+describe('Keep details for 24 hours', () => {
+  it('is off by default: nothing beyond the step is kept, and the page offers it in plain words', async () => {
+    const { cookie, client, arm } = await setup(reporting('# secret · fill shop.test @e5 -- "***"', 'changed: textbox', [{ type: 'image', data: PNG, mimeType: 'image/png' }]));
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'hunter2' } });
+    const [row] = (await rowsOf(cookie)).rows;
+    expect(row.details).toBe(0);
+    expect((await details(cookie, row.id)).status).toBe(404);
+    const html = await pageHtml(cookie);
+    expect(html).toContain('Keep details for 24 hours');
+    expect(plain(html)).not.toMatch(JARGON);
+    arm.ws.close();
+  });
+
+  it("keeps the arm's line, its preview and a screenshot, never the AI app's arguments or the raw result; off deletes them at once", async () => {
+    const { user, cookie, client, arm } = await setup(reporting('# secret · fill shop.test @e5 -- "***"', "(its answer isn't kept: it can show what was typed)", [{ type: 'image', data: PNG, mimeType: 'image/png' }]));
+    const on = await keep(cookie, true);
+    expect(on.status).toBe(303);
+    expect(on.headers.get('Location')).toBe(`${ORIGIN}/app/activity?done=keeping`);
+    const html = await pageHtml(cookie, '?done=keeping');
+    expect(html).toContain('Cloud Bridge keeps details of new steps for 24 hours from now on.');
+    expect(html).toContain('Stop keeping details');
+    expect(plain(html)).not.toMatch(JARGON);
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'hunter2' } });
+    const [row] = (await rowsOf(cookie)).rows;
+    expect(row.details).toBe(1);
+    const got = await (await details(cookie, row.id)).json();
+    expect(got).toEqual({ line: '# secret · fill shop.test @e5 -- "***"', preview: "(its answer isn't kept: it can show what was typed)", image: true, imageTooBig: false });
+    const stored = await runInDurableObject(stubOf(user.uid), (_: UserHub, state) => JSON.stringify(state.storage.sql.exec('SELECT line, preview FROM details').toArray()));
+    expect(stored).not.toContain('hunter2');
+    const img = await hub(`/app/activity/image?id=${row.id}`, { headers: { Cookie: cookie } });
+    expect(img.headers.get('Content-Type')).toBe('image/png');
+    expect(img.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(img.headers.get('Content-Security-Policy')).toContain('sandbox');
+    expect([...new Uint8Array(await img.arrayBuffer())]).toEqual([...'\x89PNG fake bytes'].map((c) => c.charCodeAt(0)));
+    // Another account can't read them.
+    const other = await cookieFor(newUser());
+    expect((await details(other, row.id)).status).toBe(404);
+    expect((await hub(`/app/activity/image?id=${row.id}`, { headers: { Cookie: other } })).status).toBe(404);
+    const off = await keep(cookie, false);
+    expect(off.headers.get('Location')).toBe(`${ORIGIN}/app/activity?done=cleared`);
+    expect((await details(cookie, row.id)).status).toBe(404);
+    expect((await rowsOf(cookie)).rows[0].details).toBe(0);
+    expect(await runInDurableObject(stubOf(user.uid), (_: UserHub, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM details').one().n)).toBe(0);
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'after' } });
+    expect((await rowsOf(cookie)).rows[0].details).toBe(0);
+    arm.ws.close();
+  });
+
+  it('keeps only image types a browser shows as images, and says when a screenshot was too big', async () => {
+    const shots = [
+      { type: 'image', data: btoa('<svg onload=alert(1)>'), mimeType: 'image/svg+xml' },
+      { type: 'image', data: btoa('x'.repeat(IMAGE_MAX + 10)), mimeType: 'image/jpeg' },
+    ];
+    let n = 0;
+    const { cookie, client, arm } = await setup(() => ({ content: [shots[n++]], _meta: { [ACTIVITY_META]: { command: 'shot', line: 'shot a.test shot.png' } } }));
+    await keep(cookie, true);
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'a' } });
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'b' } });
+    const [big, svg] = (await rowsOf(cookie)).rows;
+    expect(await (await details(cookie, svg.id)).json()).toMatchObject({ image: false, imageTooBig: false });
+    expect(await (await details(cookie, big.id)).json()).toMatchObject({ image: false, imageTooBig: true });
+    expect((await hub(`/app/activity/image?id=${svg.id}`, { headers: { Cookie: cookie } })).status).toBe(404);
+    arm.ws.close();
+  });
+
+  it(`past ${DETAILS_CAP / 1048576} MB the oldest details make room, and their steps say so`, async () => {
+    const { user, cookie, client, arm } = await setup(reporting('snap a.test', 'ok'));
+    await keep(cookie, true);
+    for (const t of ['old', 'mid', 'new']) await client.callTool({ name: 'fake_echo', arguments: { text: t } });
+    const [newest, mid, old] = (await rowsOf(cookie)).rows;
+    // As if the two older ones held a big screenshot each.
+    await runInDurableObject(stubOf(user.uid), (_: UserHub, state) => {
+      state.storage.sql.exec('UPDATE details SET bytes = ? WHERE activity_id IN (?, ?)', DETAILS_CAP / 2, old.id, mid.id);
+      state.storage.sql.exec("UPDATE settings SET json = (SELECT SUM(bytes) FROM details) WHERE key = 'details_bytes'");
+    });
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'one more' } });
+    const rows = (await rowsOf(cookie)).rows;
+    expect(rows.map((r) => [r.id, r.details])).toEqual([
+      [rows[0].id, 1],
+      [newest.id, 1],
+      [mid.id, 1],
+      [old.id, 2],
+    ]);
+    expect((await details(cookie, old.id)).status).toBe(404);
+    arm.ws.close();
+  });
+
+  it('details last 24 hours, swept by an alarm even when no call comes', async () => {
+    const { user, cookie, client, arm } = await setup(reporting('snap a.test', 'ok'));
+    await keep(cookie, true);
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'a' } });
+    const stub = stubOf(user.uid);
+    const alarm = await runInDurableObject(stub, (_: UserHub, state) => state.storage.getAlarm());
+    expect(alarm).toBeGreaterThan(Date.now() + DETAILS_MS - 60_000);
+    const [row] = (await rowsOf(cookie)).rows;
+    await runInDurableObject(stub, async (instance: UserHub, state) => {
+      state.storage.sql.exec('UPDATE details SET ts = ?', Date.now() - DETAILS_MS - 1);
+      expect(await instance.stepDetails(row.id)).toBeNull(); // read as gone at once
+      await instance.alarm();
+      expect(state.storage.sql.exec('SELECT COUNT(*) AS n FROM details').one().n).toBe(0);
+      expect(state.storage.sql.exec("SELECT json FROM settings WHERE key = 'details_bytes'").one().json).toBe('0');
+    });
+    expect((await rowsOf(cookie)).rows[0].details).toBe(0);
+    arm.ws.close();
+  });
+
+  it('the sweep runs at most hourly and reads only what it deletes (an alarm per kept step scanned the whole table each time)', async () => {
+    const { user, cookie, client, arm } = await setup(reporting('snap a.test', 'ok'));
+    await keep(cookie, true);
+    for (let i = 0; i < 3; i++) await client.callTool({ name: 'fake_echo', arguments: { text: String(i) } });
+    const stub = stubOf(user.uid);
+    await runInDurableObject(stub, async (instance: UserHub, state) => {
+      const now = Date.now();
+      const ids = state.storage.sql.exec<{ id: number }>('SELECT activity_id AS id FROM details ORDER BY activity_id').toArray().map((r) => r.id);
+      // The two older ones expired; the newest was kept 23 hours ago.
+      state.storage.sql.exec('UPDATE details SET ts = ? WHERE activity_id IN (?, ?)', now - DETAILS_MS - 1, ids[0], ids[1]);
+      state.storage.sql.exec('UPDATE details SET ts = ? WHERE activity_id = ?', now - 23 * 3600_000, ids[2]);
+      await instance.alarm();
+      expect(state.storage.sql.exec<{ id: number }>('SELECT activity_id AS id FROM details').toArray().map((r) => r.id)).toEqual([ids[2]]);
+      const alarm = (await state.storage.getAlarm())!;
+      expect(alarm % 3600_000).toBe(0); // on the hour, so one run clears a batch
+      expect(alarm).toBeGreaterThanOrEqual(now + 3600_000 - 1000);
+      expect(alarm).toBeLessThanOrEqual(now + 2 * 3600_000);
+      const left = state.storage.sql.exec<{ n: number }>('SELECT SUM(bytes) AS n FROM details').one().n;
+      expect(state.storage.sql.exec("SELECT json FROM settings WHERE key = 'details_bytes'").one().json).toBe(String(left));
+    });
+    arm.ws.close();
+  });
+
+  it('downloads a group as a script: kept lines oldest first, every other step a comment', async () => {
+    const lines = ['open https://a.test/', null, 'snap a.test'];
+    let n = 0;
+    const { cookie, client, arm } = await setup(() => {
+      const line = lines[n++];
+      return { content: [{ type: 'text', text: 'ok' }], _meta: { [ACTIVITY_META]: line ? { command: line.split(' ')[0], site: 'a.test', line } : { command: 'tabs' } } };
+    });
+    await keep(cookie, true);
+    for (let i = 0; i < 3; i++) await client.callTool({ name: 'fake_echo', arguments: { text: 'x' } });
+    const ids = (await rowsOf(cookie)).rows.map((r) => r.id);
+    const res = await hub(`/app/activity/script?ids=${[...ids].reverse().join(',')},999999,abc`, { headers: { Cookie: cookie } });
+    expect(res.headers.get('Content-Disposition')).toContain('attachment');
+    const body = await res.text();
+    const [, , , ...steps] = body.trimEnd().split('\n');
+    expect(steps[0]).toBe('open https://a.test/');
+    expect(steps[1]).toMatch(/^# \d{4}-\d\d-\d\dT[\d:.]+Z tabs: details not kept$/);
+    expect(steps[2]).toBe('snap a.test');
+    expect(body).toContain('3 steps, 2 with their commands');
+    expect(body).toContain('node cli.mjs batch < steps.txt');
+    const many = await (await hub(`/app/activity/script?ids=${Array.from({ length: 502 }, (_, i) => i + 1).join(',')}`, { headers: { Cookie: cookie } })).text();
+    expect(many.split('\n')[0]).toBe('# Only the first 500 of the 502 steps asked for: a script holds at most 500.');
+    // Someone else's ids give them nothing.
+    const other = await (await hub(`/app/activity/script?ids=${ids.join(',')}`, { headers: { Cookie: await cookieFor(newUser()) } })).text();
+    expect(other).toContain('0 steps');
+    arm.ws.close();
+  });
+
+  it('the switch takes only this account\'s own page: a stale token or another site changes nothing', async () => {
+    const { user, cookie } = await (async () => {
+      const u = newUser();
+      return { user: u, cookie: await cookieFor(u) };
+    })();
+    const csrf = await csrfOn(cookie);
+    const stale = await form('/app/activity/keep', cookie, { csrf: 'nope', on: '1' });
+    expect(stale.headers.get('Location')).toBe(`${ORIGIN}/app/activity?error=stale`);
+    const cross = await form('/app/activity/keep', cookie, { csrf, on: '1' }, { 'Sec-Fetch-Site': 'cross-site' });
+    expect(cross.headers.get('Location')).toBe(`${ORIGIN}/app/activity?error=stale`);
+    expect(await stubOf(user.uid).keepingDetails()).toBe(false);
+    const out = await hub('/app/activity/keep', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'on=1' });
+    expect(out.headers.get('Location')).toBe(`${ORIGIN}/login?next=/app/activity`);
   });
 });
 

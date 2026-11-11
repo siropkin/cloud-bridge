@@ -54,6 +54,7 @@ const RULES: Record<string, Rule> = {
   'POST /app/rename': { binding: 'ARM_LIMIT', refuse: accountPage },
   'POST /app/disconnect': { binding: 'ARM_LIMIT', refuse: accountPage },
   'POST /app/forget': { binding: 'ARM_LIMIT', refuse: accountPage },
+  'POST /app/activity/keep': { binding: 'ARM_LIMIT', refuse: accountPage },
   'POST /app/delete': { binding: 'SIGNIN_LIMIT', refuse: accountPage },
 };
 

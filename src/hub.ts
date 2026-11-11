@@ -51,15 +51,44 @@ export interface CallMeta {
 }
 
 // What an arm may say about a call in its result's _meta, for the Activity page:
-// the command word and the site it acted on. The hub never parses arguments
-// for these (arm-agnostic) and never forwards _meta to the AI app.
+// the command word, the site it acted on, and — kept only while the person
+// opted in to details — its replay line (secrets already "***") and a preview
+// of its answer, both the arm's own people-safe forms. The hub never parses
+// arguments or results for these (arm-agnostic) and never forwards _meta.
 export const ACTIVITY_META = 'cloud-bridge/activity';
-export function reportedActivity(meta: unknown): { command: string | null; site: string | null } {
+export const LINE_MAX = 8_200;
+export const PREVIEW_MAX = 2_000;
+export interface Report {
+  command: string | null;
+  site: string | null;
+  line: string | null;
+  preview: string | null;
+}
+const NO_REPORT: Report = { command: null, site: null, line: null, preview: null };
+export function reportedActivity(meta: unknown): Report {
   const a = meta && typeof meta === 'object' ? (meta as Record<string, unknown>)[ACTIVITY_META] : null;
   const r = a && typeof a === 'object' ? (a as Record<string, unknown>) : {};
   const command = typeof r.command === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(r.command) ? r.command : null;
   const site = typeof r.site === 'string' && r.site.length <= 253 && /^[a-z0-9-]+(\.[a-z0-9-]+)*(:\d{1,5})?$/i.test(r.site) ? r.site.toLowerCase() : null;
-  return { command, site };
+  const text = (v: unknown, max: number) => (typeof v === 'string' && v ? v.slice(0, max) : null);
+  return { command, site, line: text(r.line, LINE_MAX), preview: text(r.preview, PREVIEW_MAX) };
+}
+
+// "Keep details for 24 hours" (off by default): per step, the arm's line and
+// preview plus the result's first image, for a day, within a per-account cap
+// (every account shares the Free plan's Durable Object storage). Past the cap
+// the oldest details go first; their steps stay listed and say so.
+export const DETAILS_MS = 24 * 3600_000;
+export const DETAILS_CAP = 10 * 1048576;
+export const IMAGE_MAX = 300 * 1024;
+// The sweep after a detail kept at `ts` expires, on the hour (see UserHub.sweepLater).
+export const sweepAt = (ts: number) => Math.ceil((ts + DETAILS_MS) / 3600_000) * 3600_000;
+const IMAGE_TYPES = /^image\/(png|jpeg|webp)$/;
+export interface StepDetails {
+  line: string | null;
+  preview: string | null;
+  image: boolean;
+  imageTooBig: boolean;
 }
 
 // One activity row as the Activity page shows it.
@@ -76,6 +105,7 @@ export type ActivityView = {
   ok: number;
   ms: number;
   error: string | null; // a plain-words note for the person (the hub's, never an arm's text)
+  details: number; // 0: none kept, 1: kept (open them), 2: removed to make room
 };
 
 // MCP content blocks as arms send them (text, image, resource…), passed through untouched.
@@ -194,6 +224,12 @@ export class UserHub extends DurableObject<Env> {
     const logged = new Set(this.sql.exec<{ name: string }>('PRAGMA table_info(activity)').toArray().map((c) => c.name));
     if (!logged.has('verb')) this.sql.exec('ALTER TABLE activity ADD COLUMN verb TEXT');
     if (!logged.has('client_name')) this.sql.exec('ALTER TABLE activity ADD COLUMN client_name TEXT');
+    this.sql.exec('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, json TEXT NOT NULL)');
+    // One row per step whose details were kept; dropped = removed to make room
+    // (its content is gone, the row says so until the day is over).
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS details(
+      activity_id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, line TEXT, preview TEXT, image BLOB, image_type TEXT,
+      image_too_big INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL, dropped INTEGER NOT NULL DEFAULT 0)`);
     // When files were kept (the bytes live in KV): the daily cap counts these.
     this.sql.exec('CREATE TABLE IF NOT EXISTS files(ts INTEGER NOT NULL, size INTEGER NOT NULL)');
     // Whose hub this is: ctx.id.name when the caller used idFromName (every caller
@@ -620,7 +656,7 @@ export class UserHub extends DurableObject<Env> {
       const isError = result.isError === true;
       // Never the arm's own error text: it can echo the command line (a chrome_batch
       // "$ fill … -- <secret>") or page content. Metadata only.
-      this.record(meta, arm.id, name, !isError, Date.now() - started, isError ? ARM_ERROR : null, reportedActivity(result._meta));
+      this.record(meta, arm.id, name, !isError, Date.now() - started, isError ? ARM_ERROR : null, reportedActivity(result._meta), content);
       return { content, isError };
     } catch (error) {
       const text = `The ${arm.kind} "${arm.name}" failed on ${name}: ${(error as Error).message}. The command may or may not have run: check the current state before retrying.`;
@@ -634,8 +670,9 @@ export class UserHub extends DurableObject<Env> {
     }
   }
 
-  // Metadata only: never arguments or results (opt-in kept details are D2b).
-  private record(meta: CallMeta, armId: string | null, command: string, ok: boolean, ms: number, error: string | null, report: { command: string | null; site: string | null } = { command: null, site: null }): void {
+  // Metadata, plus the arm's reported details while the person keeps them:
+  // never the AI app's arguments or the result's text as such.
+  private record(meta: CallMeta, armId: string | null, command: string, ok: boolean, ms: number, error: string | null, report: Report = NO_REPORT, content: ContentBlock[] = []): void {
     // A call that waited on an arm while the account was deleted: nothing to keep.
     if (armId && !this.has()) return;
     this.ensure(); // a signed-in user's call: their hub may keep rows now
@@ -656,7 +693,143 @@ export class UserHub extends DurableObject<Env> {
       )
       .one().id;
     this.prune(Date.now());
+    this.sql.exec('DELETE FROM details WHERE activity_id < (SELECT MIN(id) FROM activity)');
+    if (this.keepingDetails()) this.keepDetails(id, report, content);
     this.broadcast(this.activityWhere('a.id = ?', [id], 1));
+  }
+
+  keepingDetails(): boolean {
+    return this.has() && this.sql.exec("SELECT 1 FROM settings WHERE key = 'keep_details' AND json = 'true'").toArray().length > 0;
+  }
+
+  private keepDetails(id: number, report: Report, content: ContentBlock[]): void {
+    const shot = content.find((c) => c.type === 'image' && typeof c.data === 'string' && IMAGE_TYPES.test(c.mimeType ?? ''));
+    let image: Uint8Array | null = null;
+    let tooBig = false;
+    if (shot) {
+      if (shot.data!.length * 0.75 > IMAGE_MAX + 4) tooBig = true;
+      else {
+        try {
+          image = Uint8Array.from(atob(shot.data!), (c) => c.charCodeAt(0));
+        } catch {
+          // not base64: nothing to show
+        }
+        if (image && image.length > IMAGE_MAX) [image, tooBig] = [null, true];
+      }
+    }
+    if (!report.line && !report.preview && !image && !tooBig) return;
+    const enc = new TextEncoder();
+    const bytes = enc.encode(report.line ?? '').length + enc.encode(report.preview ?? '').length + (image?.length ?? 0);
+    const now = Date.now();
+    this.sql.exec(
+      'INSERT OR REPLACE INTO details(activity_id, ts, line, preview, image, image_type, image_too_big, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      id,
+      now,
+      report.line,
+      report.preview,
+      image ? image.buffer : null,
+      image ? shot!.mimeType! : null,
+      tooBig ? 1 : 0,
+      bytes,
+    );
+    // Over the account's cap: the oldest kept details make room, down to 80% so
+    // this scan of every kept row runs now and then, not on every call.
+    if (this.detailsBytes(bytes) > DETAILS_CAP) {
+      this.sql.exec(
+        `UPDATE details SET line = NULL, preview = NULL, image = NULL, image_type = NULL, bytes = 0, dropped = 1 WHERE activity_id IN
+          (SELECT activity_id FROM (SELECT activity_id, SUM(bytes) OVER (ORDER BY activity_id DESC) AS total FROM details WHERE dropped = 0) WHERE total > ?)`,
+        DETAILS_CAP * 0.8,
+      );
+      this.recountDetails();
+    }
+    void this.sweepLater(sweepAt(now));
+  }
+
+  // The kept bytes, as a running total (summing the table on every call read every row).
+  private detailsBytes(add = 0): number {
+    const row = this.sql.exec<{ json: string }>("SELECT json FROM settings WHERE key = 'details_bytes'").toArray()[0];
+    const total = (row ? Number(row.json) : 0) + add;
+    if (add) this.sql.exec("INSERT OR REPLACE INTO settings(key, json) VALUES ('details_bytes', ?)", String(total));
+    return total;
+  }
+
+  private recountDetails(): void {
+    const total = this.sql.exec<{ n: number | null }>('SELECT SUM(bytes) AS n FROM details').one().n ?? 0;
+    this.sql.exec("INSERT OR REPLACE INTO settings(key, json) VALUES ('details_bytes', ?)", String(total));
+  }
+
+  // Details last a day even when no call comes to clear them: the alarm does,
+  // at most hourly, so it clears a batch per run (an alarm per kept step would
+  // wake the object as often as the calls themselves).
+  private async sweepLater(at: number): Promise<void> {
+    const alarm = await this.ctx.storage.getAlarm();
+    if (alarm === null || alarm > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  // Ids follow time, so the expired details are the ones before the first fresh
+  // one: range reads on the key, proportional to what goes.
+  async alarm(): Promise<void> {
+    if (!this.has()) return;
+    const fresh = this.sql.exec<{ id: number }>('SELECT activity_id AS id FROM details WHERE ts > ? ORDER BY activity_id LIMIT 1', Date.now() - DETAILS_MS).toArray()[0];
+    const before = fresh ? fresh.id : Number.MAX_SAFE_INTEGER;
+    const freed = this.sql.exec<{ n: number | null }>('SELECT SUM(bytes) AS n FROM details WHERE activity_id < ?', before).one().n ?? 0;
+    this.sql.exec('DELETE FROM details WHERE activity_id < ?', before);
+    if (freed) this.detailsBytes(-freed);
+    const next = this.sql.exec<{ ts: number }>('SELECT ts FROM details ORDER BY activity_id LIMIT 1').toArray()[0];
+    if (next) await this.ctx.storage.setAlarm(sweepAt(next.ts));
+  }
+
+  // The switch on the Activity page. Off deletes everything kept, at once.
+  async setKeepDetails(on: boolean): Promise<void> {
+    this.ensure();
+    if (on) this.sql.exec("INSERT OR REPLACE INTO settings(key, json) VALUES ('keep_details', 'true')");
+    else {
+      this.sql.exec("DELETE FROM settings WHERE key IN ('keep_details', 'details_bytes')");
+      this.sql.exec('DELETE FROM details');
+      await this.ctx.storage.deleteAlarm();
+    }
+  }
+
+  async stepDetails(id: number): Promise<StepDetails | null> {
+    if (!this.has()) return null;
+    const row = this.sql
+      .exec<{ line: string | null; preview: string | null; has_image: number; image_too_big: number }>(
+        'SELECT line, preview, image IS NOT NULL AS has_image, image_too_big FROM details WHERE activity_id = ? AND dropped = 0 AND ts > ?',
+        id,
+        Date.now() - DETAILS_MS,
+      )
+      .toArray()[0];
+    return row ? { line: row.line, preview: row.preview, image: !!row.has_image, imageTooBig: !!row.image_too_big } : null;
+  }
+
+  async stepImage(id: number): Promise<{ bytes: ArrayBuffer; type: string } | null> {
+    if (!this.has()) return null;
+    const row = this.sql.exec<{ image: ArrayBuffer | null; image_type: string | null }>('SELECT image, image_type FROM details WHERE activity_id = ? AND dropped = 0 AND ts > ?', id, Date.now() - DETAILS_MS).toArray()[0];
+    return row?.image && row.image_type ? { bytes: row.image, type: row.image_type } : null;
+  }
+
+  // A batch script from the given steps, oldest first: each kept line as is,
+  // every other step as a comment saying what it was.
+  async stepScript(ids: number[]): Promise<{ steps: number; kept: number; text: string }> {
+    if (!this.has() || !ids.length) return { steps: 0, kept: 0, text: '' };
+    const rows = this.sql
+      .exec<{ id: number; ts: number; tool: string; verb: string | null; site: string | null; line: string | null }>(
+        `SELECT a.id, a.ts, a.command AS tool, a.verb, a.target_host AS site, d.line FROM activity a
+          LEFT JOIN details d ON d.activity_id = a.id AND d.dropped = 0 AND d.ts > ? WHERE a.id IN (SELECT value FROM json_each(?)) ORDER BY a.id`,
+        Date.now() - DETAILS_MS,
+        JSON.stringify(ids),
+      )
+      .toArray();
+    let kept = 0;
+    const out = rows.map((r) => {
+      if (r.line) {
+        kept++;
+        return r.line;
+      }
+      const what = (r.verb ?? r.tool) + (r.site ? ` on ${r.site}` : '');
+      return `# ${new Date(r.ts).toISOString()} ${what}: details not kept`;
+    });
+    return { steps: rows.length, kept, text: out.join('\n') };
   }
 
   // Keeps 30 days, at most the newest 5,000 (CALLS_PER_DAY counts these rows, so
@@ -717,8 +890,11 @@ export class UserHub extends DurableObject<Env> {
     return this.sql
       .exec<ActivityView>(
         `SELECT a.id, a.ts, a.client, a.client_name AS clientName, r.name AS profile, (a.arm_id IS NOT NULL AND r.id IS NULL) AS profileGone,
-          a.command AS tool, a.verb AS command, a.target_host AS site, a.ok, a.ms, a.error
-        FROM activity a LEFT JOIN arms r ON r.id = a.arm_id WHERE ${where} ORDER BY a.id DESC LIMIT ?`,
+          a.command AS tool, a.verb AS command, a.target_host AS site, a.ok, a.ms, a.error,
+          CASE WHEN d.activity_id IS NULL THEN 0 WHEN d.dropped = 1 THEN 2 ELSE 1 END AS details
+        FROM activity a LEFT JOIN arms r ON r.id = a.arm_id LEFT JOIN details d ON d.activity_id = a.id AND d.ts > ?
+        WHERE ${where} ORDER BY a.id DESC LIMIT ?`,
+        Date.now() - DETAILS_MS,
         ...params,
         limit,
       )

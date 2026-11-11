@@ -6,7 +6,7 @@ import type { GrantSummary } from '@cloudflare/workers-oauth-provider';
 import { clearSession, readSession, requireSession, sameOrigin, type HubEnv, type Session } from './auth';
 import { ACTIVITY_STYLE, activityData, activityScript, PAGE_ROWS, STRIP_ROWS } from './activity';
 import { addSteps, COPY_SCRIPT } from './guide';
-import { validArm, type ArmDetails } from './hub';
+import { DETAILS_CAP, IMAGE_MAX, validArm, type ArmDetails } from './hub';
 import { armLabel } from './kinds';
 import { ago } from './tools';
 import { escapeHtml, page, sign, verify } from './util';
@@ -20,6 +20,8 @@ const DONE: Record<string, string> = {
   renamed: 'Renamed. AI apps use the new name from their next call.',
   disconnected: "Disconnected. AI apps can't use that Chrome profile until you connect it again from the chrome-bridge popup.",
   removed: "Removed. That AI app can't use your Chrome until you allow it again.",
+  keeping: 'Cloud Bridge keeps details of new steps for 24 hours from now on.',
+  cleared: "Cloud Bridge stopped keeping details and deleted the ones it had.",
 };
 const PROBLEM: Record<string, string> = {
   taken: 'Another Chrome profile already has that name, so nothing changed. Pick a different name.',
@@ -130,15 +132,30 @@ ${addSteps(request.url)}
   );
 }
 
+function detailsSection(keeping: boolean, csrf: string): string {
+  const mb = DETAILS_CAP / 1048576;
+  return keeping
+    ? `<section><h2>Details</h2><p><strong>Cloud Bridge keeps each new step's details for 24 hours:</strong> the command, what it answered and its screenshot (up to ${IMAGE_MAX / 1024} KB). Typed text stays hidden as ***. Click <b>Details</b> on a step to see them, or download a group of steps as a script to replay with chrome-bridge. Up to ${mb} MB in all: past that, the oldest details go first.</p>
+<form method="post" action="/app/activity/keep">${hidden({ csrf, on: '0' })}<p><button class="secondary">Stop keeping details</button> <span class="note">Deletes the details kept so far.</span></p></form></section>`
+    : `<section><h2>Details</h2><p>To see exactly what each step did, Cloud Bridge can keep its command, what it answered and its screenshot for 24 hours. Typed text stays hidden as ***.</p>
+<form method="post" action="/app/activity/keep">${hidden({ csrf, on: '1' })}<p><button class="secondary">Keep details for 24 hours</button></p></form></section>`;
+}
+
 // GET /app/activity: everything kept, grouped by app and profile, with filters; live.
 export async function activityPage(request: Request, env: HubEnv): Promise<Response> {
   const session = await requireSession(request, env);
   if (session instanceof Response) return session;
-  const [apps, { rows, more }, live] = await Promise.all([allowedApps(env, session.uid), hubOf(env, session.uid).activityRows(0, PAGE_ROWS), activityScript()]);
+  const hub = hubOf(env, session.uid);
+  const [apps, { rows, more }, live, keeping, csrf] = await Promise.all([allowedApps(env, session.uid), hub.activityRows(0, PAGE_ROWS), activityScript(), hub.keepingDetails(), csrfFor(session.uid, env.COOKIE_ENCRYPTION_KEY)]);
+  const params = new URL(request.url).searchParams;
+  const done = DONE[params.get('done') ?? ''];
+  const problem = PROBLEM[params.get('error') ?? ''];
+  const flash = done ? `<p class="ok">${done}</p>\n` : problem ? `<p class="warn">${problem}</p>\n` : '';
   return page(
     'What AI apps did in your Chrome',
     `${ACTIVITY_STYLE}<p class="note">Signed in with GitHub as <strong>@${escapeHtml(session.login)}</strong> · <a href="/app">Back to your Cloud Bridge</a></p>
-<p>Each step an AI app takes in your Chrome shows up here as it happens. Cloud Bridge keeps when it happened, which app and Chrome profile, what kind of step, the website and whether it worked. It doesn't keep what was typed or what the page showed. Steps stay for 30 days (the latest 5,000).</p>
+${flash}<p>Each step an AI app takes in your Chrome shows up here as it happens. Cloud Bridge keeps when it happened, which app and Chrome profile, what kind of step, the website and whether it worked. Steps stay for 30 days (the latest 5,000).</p>
+${detailsSection(keeping, csrf)}
 <div class="filters"><select id="f-app" aria-label="AI app"></select><select id="f-profile" aria-label="Chrome profile"></select>
 <label><input type="checkbox" id="f-bad"> Only steps that didn't work</label><input id="f-q" type="search" placeholder="Search steps or websites" aria-label="Search steps or websites"></div>
 <p id="activity-status" class="note">Connecting…</p>
@@ -150,15 +167,15 @@ ${activityData('full', rows, more, appNames(apps))}`,
   );
 }
 
-const back = (request: Request, query: string) => Response.redirect(new URL(`/app?${query}`, request.url).href, 303);
+const back = (request: Request, query: string, path = '/app') => Response.redirect(new URL(`${path}?${query}`, request.url).href, 303);
 
 // The checks every POST here shares: signed in, from this hub's own page, with this
 // account's token. Signed out: sign in, then the account page (not this POST's path).
-async function formFor(request: Request, env: HubEnv): Promise<{ session: Session; form: FormData } | Response> {
+async function formFor(request: Request, env: HubEnv, path = '/app'): Promise<{ session: Session; form: FormData } | Response> {
   const session = await readSession(request, env.COOKIE_ENCRYPTION_KEY);
-  if (!session) return Response.redirect(new URL('/login?next=/app', request.url).href, 303);
+  if (!session) return Response.redirect(new URL(`/login?next=${path}`, request.url).href, 303);
   const form = await request.formData();
-  if (!sameOrigin(request) || !(await verify(`app|${session.uid}`, String(form.get('csrf') ?? ''), env.COOKIE_ENCRYPTION_KEY))) return back(request, 'error=stale');
+  if (!sameOrigin(request) || !(await verify(`app|${session.uid}`, String(form.get('csrf') ?? ''), env.COOKIE_ENCRYPTION_KEY))) return back(request, 'error=stale', path);
   return { session, form };
 }
 
@@ -170,6 +187,15 @@ export async function renameBrowser(request: Request, env: HubEnv): Promise<Resp
   if (/[\x00-\x1f\x7f]/.test(name) || validArm('chrome', name)) return back(request, 'error=invalid');
   const result = await hubOf(env, got.session.uid).renameArm(String(got.form.get('id') ?? ''), name);
   return back(request, result === 'ok' ? 'done=renamed' : `error=${result}`);
+}
+
+// POST /app/activity/keep {on: '1' | '0'}: off deletes what was kept.
+export async function keepDetails(request: Request, env: HubEnv): Promise<Response> {
+  const got = await formFor(request, env, '/app/activity');
+  if (got instanceof Response) return got;
+  const on = got.form.get('on') === '1';
+  await hubOf(env, got.session.uid).setKeepDetails(on);
+  return back(request, on ? 'done=keeping' : 'done=cleared', '/app/activity');
 }
 
 // POST /app/disconnect {id}

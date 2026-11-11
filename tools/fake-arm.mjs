@@ -49,8 +49,13 @@ function call(name, a = {}) {
     try {
       site = new URL(url).host;
     } catch {}
-    // _meta 'cloud-bridge/activity': what the Activity page shows (the hub keeps it, never forwards it).
-    return { content: [{ type: 'text', text: `${url}  "Example Domain"\n[1] heading "Example Domain"\n[2] link "More information..."` }], _meta: { 'cloud-bridge/activity': { command: 'snap', site } } };
+    // _meta 'cloud-bridge/activity': what the Activity page shows (the hub keeps it, never forwards it);
+    // line and preview only while the person keeps details. The image is a 1×1 stand-in screenshot.
+    const text = `${url}  "Example Domain"\n[1] heading "Example Domain"\n[2] link "More information..."`;
+    return {
+      content: [{ type: 'text', text }, { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' }],
+      _meta: { 'cloud-bridge/activity': { command: 'snap', site, line: `snap ${JSON.stringify(url)}`, preview: text } },
+    };
   }
   return { content: [{ type: 'text', text: `Unknown tool ${name}. Tools: ${TOOLS.map((t) => t.name).join(', ')}.` }], isError: true };
 }
