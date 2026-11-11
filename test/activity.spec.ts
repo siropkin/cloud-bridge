@@ -129,7 +129,7 @@ describe('Activity page', () => {
     arm.ws.close();
   });
 
-  it("an arm's error stays unnamed, a hub refusal keeps its words, and a removed profile is said to be removed", async () => {
+  it("an arm's error stays unnamed, a refusal gets a plain note, and a removed profile is said to be removed", async () => {
     const { user, cookie, client, arm } = await setup(() => ({ content: [{ type: 'text', text: 'boom' }], isError: true }));
     await client.callTool({ name: 'fake_echo', arguments: { text: 'a' } });
     const [failed] = (await rowsOf(cookie)).rows;
@@ -139,9 +139,24 @@ describe('Activity page', () => {
     await client.callTool({ name: 'fake_echo', arguments: { text: 'b' } });
     const [refused, gone] = (await rowsOf(cookie)).rows;
     expect(refused).toMatchObject({ ok: 0, profile: null, profileGone: 0 });
-    expect(refused.error).toBeTruthy(); // the hub's own words to the AI app
+    expect(refused.error).toBe("The AI app asked for a step that nothing you've connected offers."); // plain words, not the AI app's text
     expect(gone).toMatchObject({ id: failed.id, profile: null, profileGone: 1 });
     arm.ws.close();
+  });
+
+  it('says in plain words when a profile lost its connection or never answered (found live: the page read "the arm disconnected (1006 …)")', async () => {
+    const { cookie, client, arm } = await setup(() => undefined); // never answers
+    const timedOut = await client.callTool({ name: 'fake_echo', arguments: { text: 'a' } }); // the test timeout is 500 ms
+    expect(timedOut.isError).toBe(true);
+    const pending = client.callTool({ name: 'fake_echo', arguments: { text: 'b' } });
+    await until(() => (arm.received.filter((m) => m.method === 'tools/call').length === 2 ? true : undefined), 'the second call');
+    arm.ws.close(1011, 'gone');
+    expect((await pending).isError).toBe(true);
+    const { rows } = await rowsOf(cookie);
+    expect(rows.map((r) => r.error)).toEqual([
+      'Fake “birch” lost its connection before answering, so it may or may not have done this step.',
+      "Fake “birch” didn't answer in time, so it may or may not have done this step.",
+    ]);
   });
 
   it('a hub made before the Activity page gets its new columns and keeps its old rows', async () => {
@@ -158,6 +173,31 @@ describe('Activity page', () => {
     expect(rows).toEqual([expect.objectContaining({ tool: 'fake_echo', client: 'c1', clientName: null, command: null })]);
     const cols = await runInDurableObject(stub, (_: UserHub, state) => state.storage.sql.exec<{ name: string }>('PRAGMA table_info(activity)').toArray().map((c) => c.name));
     expect(cols).toEqual(expect.arrayContaining(['verb', 'client_name']));
+  });
+
+  it("clears the AI app's text from rows kept before plain notes, once, and keeps notes written after", async () => {
+    const { user, cookie, client, arm } = await setup();
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'ok' } });
+    const stub = stubOf(user.uid);
+    await runInDurableObject(stub, (_: UserHub, state) => {
+      state.storage.sql.exec("DELETE FROM meta WHERE key = 'notes'"); // as a hub deployed with D2a's first version
+      state.storage.sql.exec("INSERT INTO activity(ts, command, ok, ms, error) VALUES (1, 'chrome', 0, 1, 'No chrome named \"elm\". Online: birch. Pass profile as one of those names.')");
+      state.storage.sql.exec("INSERT INTO activity(ts, command, ok, ms, error) VALUES (2, 'chrome', 0, 1, 'the arm reported an error')");
+    });
+    // A fresh instance reads the tables again, as after a deploy or eviction.
+    await runInDurableObject(stub, (hub: UserHub) => {
+      (hub as unknown as { schema: boolean }).schema = false;
+    });
+    const before = (await rowsOf(cookie)).rows;
+    expect(before.filter((r) => !r.ok).map((r) => r.error)).toEqual([null, null]);
+    await stub.disconnectArm((await stub.armDetails())[0].id);
+    await client.callTool({ name: 'fake_echo', arguments: { text: 'gone' } });
+    await runInDurableObject(stub, (hub: UserHub) => {
+      (hub as unknown as { schema: boolean }).schema = false; // the next wake must not clear new notes
+    });
+    const [latest] = (await rowsOf(cookie)).rows;
+    expect(latest.error).toBe("The AI app asked for a step that nothing you've connected offers.");
+    arm.ws.close();
   });
 });
 

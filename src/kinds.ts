@@ -38,7 +38,12 @@ const capitalized = (kind: string) => kind.charAt(0).toUpperCase() + kind.slice(
 
 // "Chrome profile “poplar”", or "Fake “birch”" for a kind the hub doesn't know.
 export function armLabel(kind: string, name: string): string {
-  return `${KNOWN_KINDS[kind]?.label ?? capitalized(kind)} “${name}”`;
+  return `${kindLabel(kind)} “${name}”`;
+}
+
+// What people call one arm of this kind ("Chrome profile").
+export function kindLabel(kind: string): string {
+  return KNOWN_KINDS[kind]?.label ?? capitalized(kind);
 }
 
 // "Chrome" for the consent title; unknown kinds by their capitalized name.

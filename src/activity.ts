@@ -41,7 +41,7 @@ const CODE = String.raw`(() => {
     li.append(el('span', 'ms', r.ms < 1000 ? r.ms + ' ms' : (r.ms / 1000).toFixed(1) + ' s'));
     li.append(el('span', 'mark', r.ok ? '✓' : '✗'));
     li.title = r.ok ? 'Worked' : "Didn't work";
-    if (!r.ok) li.append(el('div', 'why', r.error ? 'Cloud Bridge told the AI app: ' + r.error : "It didn't work. Cloud Bridge doesn't keep what went wrong, since that can include what was typed or what the page showed."));
+    if (!r.ok) li.append(el('div', 'why', r.error || "It didn't work. Cloud Bridge doesn't keep what went wrong, since that can include what was typed or what the page showed."));
     return li;
   };
   const filter = { app: '', profile: '', bad: false, q: '' };

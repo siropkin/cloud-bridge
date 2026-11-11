@@ -1,7 +1,7 @@
 // Pure routing between hub tool names and arms. The hub never parses an arm's
 // commands: arms describe their tools, and this file only namespaces them,
 // picks the arm a call goes to, and words the errors for the model.
-import { KNOWN_KINDS, type KnownKind } from './kinds';
+import { armLabel, KNOWN_KINDS, kindLabel, type KnownKind } from './kinds';
 
 export interface ArmTool {
   name: string;
@@ -30,7 +30,8 @@ export interface HubTool extends ArmTool {
 
 export type Resolved =
   | { ok: true; arm: ArmInfo; tool: string; args: Record<string, unknown> }
-  | { ok: false; error: string };
+  // error: for the AI app; note: for the person reading Activity (plain words, no next steps for a model)
+  | { ok: false; error: string; note: string };
 
 export function hubToolName(kind: string, tool: string): string {
   return tool === kind || tool.startsWith(kind + '_') ? tool : `${kind}_${tool}`;
@@ -113,7 +114,7 @@ const REDIALS = 'It reconnects by itself within about a minute after the compute
 export function resolveCall(arms: ArmInfo[], hubName: string, args: Record<string, unknown>, now = Date.now(), known: Record<string, KnownKind> = KNOWN_KINDS): Resolved {
   const kinds = byKind(arms);
   for (const [kind, k] of Object.entries(known)) {
-    if (!kinds.has(kind) && k.tools.some((t) => hubToolName(kind, t.name) === hubName)) return { ok: false, error: k.notConnected };
+    if (!kinds.has(kind) && k.tools.some((t) => hubToolName(kind, t.name) === hubName)) return { ok: false, error: k.notConnected, note: `No ${kindLabel(kind)} is connected yet.` };
   }
   for (const [kind, group] of kinds) {
     const match = group.flatMap((arm) => arm.tools.filter((t) => hubToolName(kind, t.name) === hubName).map((t) => ({ arm, tool: t.name })));
@@ -125,27 +126,28 @@ export function resolveCall(arms: ArmInfo[], hubName: string, args: Record<strin
     let arm: ArmInfo | undefined;
     if (wanted !== undefined && wanted !== '') {
       arm = group.find((a) => a.name.toLowerCase() === String(wanted).toLowerCase());
-      if (!arm) return { ok: false, error: `No ${kind} named "${wanted}". Online: ${onlineNames}. Pass ${selector} as one of those names.` };
+      if (!arm) return { ok: false, error: `No ${kind} named "${wanted}". Online: ${onlineNames}. Pass ${selector} as one of those names.`, note: `The AI app asked for ${armLabel(kind, String(wanted))}, which isn't connected.` };
       if (!arm.online) {
         return {
           ok: false,
           error: `The ${kind} "${arm.name}" is offline (${ago(arm.lastSeen, now)}). Online: ${onlineNames}. ${REDIALS} If it doesn't: ${startHint(kind, arm)}, or pass ${selector} as one of the online names.`,
+          note: `${armLabel(kind, arm.name)} was offline.`,
         };
       }
     } else if (online.length === 1) {
       arm = online[0];
     } else if (online.length === 0) {
       const paired = group.map((a) => `${a.name}, ${ago(a.lastSeen, now)}`).join('; ');
-      return { ok: false, error: `No ${kind} is online (paired: ${paired}). ${REDIALS} If it doesn't: ${startHint(kind, group[0])}, then call this tool again.` };
+      return { ok: false, error: `No ${kind} is online (paired: ${paired}). ${REDIALS} If it doesn't: ${startHint(kind, group[0])}, then call this tool again.`, note: `No ${kindLabel(kind)} was online.` };
     } else {
-      return { ok: false, error: `Several ${kind}s are online: ${onlineNames}. Pass ${selector} with one of those names (ask the user which one if it isn't clear).` };
+      return { ok: false, error: `Several ${kind}s are online: ${onlineNames}. Pass ${selector} with one of those names (ask the user which one if it isn't clear).`, note: `Several ${kindLabel(kind)}s were online and the AI app didn't say which one to use.` };
     }
     const tool = match.find((m) => m.arm.id === arm.id)?.tool;
     if (!tool) {
       const has = match.map((m) => m.arm.name).join(', ');
-      return { ok: false, error: `The ${kind} "${arm.name}" doesn't offer ${hubName} (its version may be older). ${has} does: pass ${selector} as that name, or ask the user to update "${arm.name}".` };
+      return { ok: false, error: `The ${kind} "${arm.name}" doesn't offer ${hubName} (its version may be older). ${has} does: pass ${selector} as that name, or ask the user to update "${arm.name}".`, note: `${armLabel(kind, arm.name)} can't do this step; it may need an update.` };
     }
     return { ok: true, arm, tool, args: rest };
   }
-  return { ok: false, error: `Unknown tool "${hubName}". Call tools/list for the current tools: the arm that offered it may have been unpaired.` };
+  return { ok: false, error: `Unknown tool "${hubName}". Call tools/list for the current tools: the arm that offered it may have been unpaired.`, note: "The AI app asked for a step that nothing you've connected offers." };
 }

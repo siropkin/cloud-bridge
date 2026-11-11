@@ -44,6 +44,7 @@ describe('resolveCall', () => {
       ok: false,
       error:
         "No chrome is online (paired: birch, last seen 5 min ago). It reconnects by itself within about a minute after the computer wakes up or its network comes back, so calling again in a minute may work. If it doesn't: Ask the user to open Chrome, then call this tool again.",
+      note: 'No Chrome profile was online.',
     });
   });
   it('asks for the selector when several are online, and honours it case-insensitively', () => {
@@ -67,6 +68,29 @@ describe('resolveCall', () => {
   });
   it('rejects unknown tools with the next step', () => {
     expect(resolveCall([arm({})], 'nope', {}, now)).toMatchObject({ ok: false, error: expect.stringContaining('Call tools/list') });
+  });
+  it('gives every refusal a plain note for the person reading Activity: no jargon, no instructions meant for the model', () => {
+    const two = [arm({ name: 'birch' }), arm({ name: 'oak', id: 'oak' })];
+    const cases = [
+      resolveCall([], 'chrome_snap', {}, now), // known kind, none connected
+      resolveCall([arm({ online: false })], 'chrome', {}, now),
+      resolveCall(two, 'chrome', {}, now),
+      resolveCall(two, 'chrome', { profile: 'elm' }, now),
+      resolveCall([arm({}), arm({ name: 'oak', id: 'oak', online: false })], 'chrome', { profile: 'oak' }, now),
+      resolveCall([arm({ name: 'birch', tools: [T('chrome')] }), arm({ name: 'oak', id: 'oak', online: false })], 'chrome_snap', {}, now),
+      resolveCall([arm({})], 'nope', {}, now),
+    ];
+    const notes = cases.map((r) => (r.ok ? '' : r.note));
+    expect(notes).toEqual([
+      'No Chrome profile is connected yet.',
+      'No Chrome profile was online.',
+      "Several Chrome profiles were online and the AI app didn't say which one to use.",
+      'The AI app asked for Chrome profile “elm”, which isn\'t connected.',
+      'Chrome profile “oak” was offline.',
+      'Chrome profile “birch” can\'t do this step; it may need an update.',
+      "The AI app asked for a step that nothing you've connected offers.",
+    ]);
+    for (const n of notes) expect(n).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b|\bpair|tools\/list|\bPass\b|selector|the user/i);
   });
 });
 
@@ -96,7 +120,7 @@ describe('known kinds before any arm is paired', () => {
     for (const t of tools) expect(resolveCall([], t.name, {}, 0)).toMatchObject({ ok: false, error: expect.stringContaining('No Chrome is connected') });
   });
   it('answers a call with how to connect one', () => {
-    expect(resolveCall([], 'chrome', {}, 0, known)).toEqual({ ok: false, error: 'Install it, then connect.' });
+    expect(resolveCall([], 'chrome', {}, 0, known)).toEqual({ ok: false, error: 'Install it, then connect.', note: 'No Chrome profile is connected yet.' });
     expect(resolveCall([arm({ online: false })], 'chrome', {}, 0, known)).toMatchObject({ ok: false, error: expect.stringContaining('No chrome is online') });
   });
 });

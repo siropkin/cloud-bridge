@@ -5,6 +5,7 @@ import { downloadPublic } from './download';
 import { deleteFiles, FILE_MAX, FILES_PER_DAY, getFile, putFile, safeName, type FileMeta } from './files';
 import { ARM_CONNECTS_PER_HOUR, CALLS_PER_DAY, CALLS_PER_MINUTE, DAY_MS, FILES_PER_DAY_ALL, HOUR_MS, MINUTE_MS, armConnectsText, callsPerDayText, callsPerMinuteText, filesTodayText } from './limits';
 import { takeQuota } from './store';
+import { armLabel } from './kinds';
 
 export const ARM_PROTOCOL = 'cloud-bridge.v1';
 const ARM_KINDS = /^[a-z][a-z0-9-]{0,23}$/;
@@ -74,7 +75,7 @@ export type ActivityView = {
   site: string | null;
   ok: number;
   ms: number;
-  error: string | null; // the hub's own message; never an arm's
+  error: string | null; // a plain-words note for the person (the hub's, never an arm's text)
 };
 
 // MCP content blocks as arms send them (text, image, resource…), passed through untouched.
@@ -199,6 +200,13 @@ export class UserHub extends DurableObject<Env> {
     // here does), kept for wakes that may lack it (a hibernated socket's message).
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     if (this.ctx.id.name) this.sql.exec("INSERT OR IGNORE INTO meta(key, value) VALUES ('user', ?)", this.ctx.id.name);
+    // Rows from before plain notes (D2a) hold the AI app's text, which the
+    // Activity page would show people: clear it once (the page then says only
+    // that it didn't work).
+    if (!this.sql.exec("SELECT 1 FROM meta WHERE key = 'notes'").toArray().length) {
+      this.sql.exec('UPDATE activity SET error = NULL WHERE error IS NOT NULL AND error != ?', ARM_ERROR);
+      this.sql.exec("INSERT INTO meta(key, value) VALUES ('notes', '1')");
+    }
     this.schema = true;
   }
 
@@ -518,7 +526,7 @@ export class UserHub extends DurableObject<Env> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`the arm didn't answer within ${Math.round(timeoutMs / 1000)}s`));
+        reject(new ArmSilent(`the arm didn't answer within ${Math.round(timeoutMs / 1000)}s`));
       }, timeoutMs);
       this.pending.set(id, { connId, resolve, reject, timer });
       try {
@@ -599,7 +607,7 @@ export class UserHub extends DurableObject<Env> {
     if (limited) return { content: [{ type: 'text', text: limited }], isError: true };
     const resolved = resolveCall(this.arms(), name, args, started);
     if (!resolved.ok) {
-      this.record(meta, null, name, false, Date.now() - started, resolved.error);
+      this.record(meta, null, name, false, Date.now() - started, resolved.note);
       return { content: [{ type: 'text', text: resolved.error }], isError: true };
     }
     const { arm, tool } = resolved;
@@ -616,8 +624,10 @@ export class UserHub extends DurableObject<Env> {
       return { content, isError };
     } catch (error) {
       const text = `The ${arm.kind} "${arm.name}" failed on ${name}: ${(error as Error).message}. The command may or may not have run: check the current state before retrying.`;
-      // The hub's own words (timeout, dropped connection) are kept; an arm's are not.
-      this.record(meta, arm.id, name, false, Date.now() - started, error instanceof ArmAnswer ? ARM_ERROR : (error as Error).message);
+      // Activity keeps plain words for the person, never the arm's own text.
+      const who = armLabel(arm.kind, arm.name);
+      const note = error instanceof ArmAnswer ? ARM_ERROR : error instanceof ArmSilent ? `${who} didn't answer in time, so it may or may not have done this step.` : `${who} lost its connection before answering, so it may or may not have done this step.`;
+      this.record(meta, arm.id, name, false, Date.now() - started, note);
       return { content: [{ type: 'text', text }], isError: true };
     } finally {
       this.calling--; // in the same step as its activity row: the count never sees it twice or not at all
@@ -723,3 +733,5 @@ export const ARM_ERROR = 'the arm reported an error';
 // A JSON-RPC error the arm answered with: its message is the arm's text, so the
 // caller may read it but activity must not keep it (as with isError results).
 class ArmAnswer extends Error {}
+// The arm said nothing before the call's timeout.
+class ArmSilent extends Error {}
