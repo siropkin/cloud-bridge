@@ -11,8 +11,8 @@ import { armLabel } from './kinds';
 import { ago } from './tools';
 import { escapeHtml, page, sign, verify } from './util';
 
-const hubOf = (env: Env, uid: string) => env.USER_HUB.get(env.USER_HUB.idFromName(uid));
-const csrfFor = (uid: string, secret: string) => sign(`app|${uid}`, secret);
+export const hubOf = (env: Env, uid: string) => env.USER_HUB.get(env.USER_HUB.idFromName(uid));
+export const csrfFor = (uid: string, secret: string) => sign(`app|${uid}`, secret);
 const GRANT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 // Fixed messages only: nothing from the query string reaches the page.
@@ -34,7 +34,7 @@ function day(ms: number): string {
   return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
-function hidden(fields: Record<string, string>): string {
+export function hidden(fields: Record<string, string>): string {
   return Object.entries(fields)
     .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`)
     .join('');
@@ -87,7 +87,8 @@ function browsersSection(arms: ArmDetails[], csrf: string, now: number): string 
   });
   return `<section><h2>Your Chrome profiles</h2>
 ${rows.join('\n')}
-<p class="note">AI apps pick a profile by its name here. Disconnect signs it out right away; to use it again, turn on Cloud AI apps in the chrome-bridge popup.</p></section>`;
+<p class="note">AI apps pick a profile by its name here. Disconnect signs it out right away; to use it again, turn on Cloud AI apps in the chrome-bridge popup.</p>
+<p><a href="/app/settings">Choose what AI apps may do in each Chrome profile →</a></p></section>`;
 }
 
 function appsSection(apps: AllowedApp[], csrf: string): string {
@@ -166,11 +167,11 @@ ${activityData('full', rows, more)}`,
   );
 }
 
-const back = (request: Request, query: string, path = '/app') => Response.redirect(new URL(`${path}?${query}`, request.url).href, 303);
+export const back = (request: Request, query: string, path = '/app') => Response.redirect(new URL(`${path}?${query}`, request.url).href, 303);
 
 // The checks every POST here shares: signed in, from this hub's own page, with this
 // account's token. Signed out: sign in, then the account page (not this POST's path).
-async function formFor(request: Request, env: HubEnv, path = '/app'): Promise<{ session: Session; form: FormData } | Response> {
+export async function formFor(request: Request, env: HubEnv, path = '/app'): Promise<{ session: Session; form: FormData } | Response> {
   const session = await readSession(request, env.COOKIE_ENCRYPTION_KEY);
   if (!session) return Response.redirect(new URL(`/login?next=${path}`, request.url).href, 303);
   const form = await request.formData();

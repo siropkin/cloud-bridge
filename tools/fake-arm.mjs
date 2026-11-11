@@ -23,6 +23,11 @@ const ONCE = args.includes('--once'); // exit after the first close (tests)
 const FILE = join(homedir(), '.cloud-bridge', `fake-arm-${NAME.replace(/[^\w-]/g, '_')}.json`);
 const log = (...a) => console.log(`[fake-arm ${NAME}]`, ...a);
 
+// What the settings page lists for this arm (each command Allow or Off, rules kept per instanceId).
+const REGISTRY = [
+  { name: 'echo', group: 'Testing', title: 'Echo text back', tools: ['echo'] },
+  { name: 'snap', group: 'Testing', title: 'Return a fixed fake snapshot', tools: ['fake_snap'] },
+];
 const TOOLS = [
   {
     name: 'echo',
@@ -121,7 +126,7 @@ async function run() {
       ws.onopen = () => {
         backoff = 1000;
         log('connected');
-        ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: { kind: 'fake', name: NAME, version: '0.1.0', selector: 'arm', offlineHint: `Ask the user to run \`npm run fake-arm -- --name ${NAME}\` in the cloud-bridge repo` } }));
+        ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: { kind: 'fake', name: NAME, version: '0.1.0', selector: 'arm', instanceId: `fake-arm-${NAME}`, registry: REGISTRY, offlineHint: `Ask the user to run \`npm run fake-arm -- --name ${NAME}\` in the cloud-bridge repo` } }));
         ping = setInterval(() => ws.send('ping'), 20_000);
       };
       ws.onmessage = (ev) => {

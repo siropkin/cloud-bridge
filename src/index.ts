@@ -9,6 +9,7 @@ import { addPage, homePage } from './guide';
 import { limitAnonymous } from './limits';
 import { mcpHandler } from './mcp';
 import { pairApprove, pairPage, pairPoll, pairStart } from './pair';
+import { saveSettings, settingsPage } from './settings';
 import { oauthKv } from './store';
 import { escapeHtml, favicon, json, page } from './util';
 
@@ -75,6 +76,8 @@ async function route(request: Request, env: HubEnv): Promise<Response> {
   if (pathname === '/app/activity/image' && m === 'GET') return activityImage(request, env);
   if (pathname === '/app/activity/script' && m === 'GET') return activityScriptFile(request, env);
   if (pathname === '/app/activity/keep' && m === 'POST') return keepDetails(request, env);
+  if (pathname === '/app/settings' && m === 'GET') return settingsPage(request, env);
+  if (pathname === '/app/settings' && m === 'POST') return saveSettings(request, env);
   if (pathname === '/app/rename' && m === 'POST') return renameBrowser(request, env);
   if (pathname === '/app/disconnect' && m === 'POST') return disconnectBrowser(request, env);
   if (pathname === '/app/forget' && m === 'POST') return forgetApp(request, env);

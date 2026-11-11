@@ -97,7 +97,7 @@ export interface TestArm {
 // An arm speaking the protocol over a real hub WebSocket.
 export async function connectArm(
   token: string,
-  opts: { name: string; kind?: string; tools?: unknown[]; onCall?: (params: any) => unknown | undefined; selector?: string; offlineHint?: string },
+  opts: { name: string; kind?: string; tools?: unknown[]; onCall?: (params: any) => unknown | undefined; selector?: string; offlineHint?: string; instanceId?: string; registry?: unknown },
 ): Promise<TestArm> {
   const res = await hub('/arm', { headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': `cloud-bridge.v1, cbtoken.${token}` } });
   const ws = res.webSocket;
@@ -125,7 +125,7 @@ export async function connectArm(
     }
   });
   // A refused socket (4401) may already be closed here.
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: { kind: opts.kind ?? 'fake', name: opts.name, version: '0.1.0', selector: opts.selector ?? 'arm', offlineHint: opts.offlineHint } }));
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: { kind: opts.kind ?? 'fake', name: opts.name, version: '0.1.0', selector: opts.selector ?? 'arm', offlineHint: opts.offlineHint, instanceId: opts.instanceId, registry: opts.registry } }));
   return { ws, received, ready, closed };
 }
 

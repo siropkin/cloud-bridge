@@ -22,6 +22,15 @@ export interface ArmInfo {
   selector: string;
   // What to tell the user when no arm of this kind is online.
   offlineHint: string | null;
+  // This arm's tools whose command the person turned Off on the settings page
+  // (arm tool name → the command and its title), and where they change it.
+  off?: Record<string, OffRule>;
+  settingsUrl?: string;
+}
+
+export interface OffRule {
+  command: string;
+  title: string;
 }
 
 export interface HubTool extends ArmTool {
@@ -30,8 +39,9 @@ export interface HubTool extends ArmTool {
 
 export type Resolved =
   | { ok: true; arm: ArmInfo; tool: string; args: Record<string, unknown> }
-  // error: for the AI app; note: for the person reading Activity (plain words, no next steps for a model)
-  | { ok: false; error: string; note: string };
+  // error: for the AI app; note: for the person reading Activity (plain words, no next steps for a model);
+  // off: the arm and command, when the person turned it Off there
+  | { ok: false; error: string; note: string; off?: { armId: string; command: string } };
 
 export function hubToolName(kind: string, tool: string): string {
   return tool === kind || tool.startsWith(kind + '_') ? tool : `${kind}_${tool}`;
@@ -53,7 +63,8 @@ function byKind(arms: ArmInfo[]): Map<string, ArmInfo[]> {
 // kinds with nothing paired yet list their tools too, so the list a client
 // caches when the connector is added already has them. Annotations
 // (readOnlyHint…) pass through as the arm wrote them: AI apps use them to
-// decide which calls need the user's OK.
+// decide which calls need the user's OK. A tool every arm of its kind has
+// turned Off is left out; a client that cached it is refused at the call.
 export function buildToolList(arms: ArmInfo[], known: Record<string, KnownKind> = KNOWN_KINDS): HubTool[] {
   const out: HubTool[] = [];
   const kinds = byKind(arms);
@@ -73,7 +84,7 @@ export function buildToolList(arms: ArmInfo[], known: Record<string, KnownKind> 
     for (const arm of group) {
       for (const tool of arm.tools) {
         const name = hubToolName(kind, tool.name);
-        if (seen.has(name)) continue;
+        if (seen.has(name) || arm.off?.[tool.name]) continue;
         seen.add(name);
         out.push({ ...tool, name, inputSchema: withSelector(tool, group[0].selector, pick) });
       }
@@ -146,6 +157,17 @@ export function resolveCall(arms: ArmInfo[], hubName: string, args: Record<strin
     if (!tool) {
       const has = match.map((m) => m.arm.name).join(', ');
       return { ok: false, error: `The ${kind} "${arm.name}" doesn't offer ${hubName} (its version may be older). ${has} does: pass ${selector} as that name, or ask the user to update "${arm.name}".`, note: `${armLabel(kind, arm.name)} can't do this step; it may need an update.` };
+    }
+    const off = arm.off?.[tool];
+    if (off) {
+      const allowed = match.filter((m) => m.arm.id !== arm.id && m.arm.online && !m.arm.off?.[m.tool]).map((m) => m.arm.name);
+      const there = arm.settingsUrl ? ` (${arm.settingsUrl})` : '';
+      return {
+        ok: false,
+        error: `${off.command} is turned off for the ${kind} "${arm.name}" in the user's Cloud Bridge settings, so nothing ran. ${allowed.length ? `${allowed.join(', ')} allow${allowed.length === 1 ? 's' : ''} it: pass ${selector} as that name, or do` : 'Do'} the task without it, or ask the user to allow it there${there}.`,
+        note: `The AI app tried to “${off.title}”, which you turned off for ${armLabel(kind, arm.name)}.`,
+        off: { armId: arm.id, command: off.command },
+      };
     }
     return { ok: true, arm, tool, args: rest };
   }

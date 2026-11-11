@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { buildToolList, resolveCall, type ArmInfo, type ArmTool, type HubTool } from './tools';
+import { buildToolList, resolveCall, type ArmInfo, type ArmTool, type HubTool, type OffRule } from './tools';
 import { randomToken, sha256, b64url } from './util';
 import { downloadPublic } from './download';
 import { deleteFiles, FILE_MAX, FILES_PER_DAY, getFile, putFile, safeName, type FileMeta } from './files';
@@ -133,6 +133,60 @@ export interface ArmDetails {
   createdAt: number;
 }
 
+// What an arm can do, from its arm/hello (`registry`): each command in people's
+// words, its group, and the arm's tools that run it. The settings page lists
+// these; an Off command's tools are hidden from AI apps and refused here.
+export interface RegistryEntry {
+  name: string;
+  group: string;
+  title: string;
+  tools: string[];
+}
+const COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
+export function validRegistry(value: unknown): RegistryEntry[] {
+  if (!Array.isArray(value)) return [];
+  const out: RegistryEntry[] = [];
+  for (const e of value.slice(0, 100)) {
+    if (!e || typeof e !== 'object') continue;
+    const { name, group, title, tools } = e as Record<string, unknown>;
+    if (typeof name !== 'string' || !COMMAND.test(name) || out.some((o) => o.name === name)) continue;
+    const text = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
+    const owned = Array.isArray(tools) ? tools.filter((t): t is string => typeof t === 'string' && t.length > 0 && t.length <= 64).slice(0, 10) : [];
+    out.push({ name, group: text(group, 40) ?? 'Other', title: text(title, 100) ?? name, tools: owned });
+  }
+  return out;
+}
+
+// The person's rules for one Chrome profile (decision d3-design: per profile).
+// Kept under the profile's own id (arm/hello `instanceId`), not the arm record,
+// so turning Cloud AI apps off and on (a new record) keeps them.
+export interface Rules {
+  commands: Record<string, 'off'>;
+  blockedDomains: string[];
+}
+export const BLOCKED_MAX = 200;
+const NO_RULES: Rules = { commands: {}, blockedDomains: [] };
+// settings key arm:<id>: which rules an arm record follows ('' = none: it sent no
+// stable id, so rules saved for it would be lost on its next pairing), and what it
+// said it can do. Rules are settable only with both: an arm that can't say what it
+// can do can't be relied on to enforce them either (review).
+interface ArmProfile {
+  rules: string;
+  registry: RegistryEntry[];
+}
+const INSTANCE = /^[A-Za-z0-9_-]{8,64}$/;
+
+// One Chrome profile on the settings page.
+export interface ProfileSettings {
+  id: string;
+  kind: string;
+  name: string;
+  online: boolean;
+  settable: boolean;
+  registry: RegistryEntry[];
+  rules: Rules;
+}
+
 type ArmRow = {
   id: string;
   kind: string;
@@ -240,6 +294,7 @@ export class UserHub extends DurableObject<Env> {
 
   private dropArm(id: string, why: string): void {
     this.sql.exec('DELETE FROM arms WHERE id = ?', id);
+    this.sql.exec('DELETE FROM settings WHERE key = ?', `arm:${id}`); // its profile's rules stay: they're the profile's
     for (const ws of this.ctx.getWebSockets(id)) {
       // A server-side close fires no webSocketClose here: fail its calls now.
       this.gone(ws, why);
@@ -414,10 +469,15 @@ export class UserHub extends DurableObject<Env> {
       Date.now(),
       att.armId,
     );
-    const policy = { commands: {}, blockedDomains: [] }; // D3 fills these from settings
-    ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/policy', params: policy }));
-    const named = this.sql.exec<{ name: string }>('SELECT name FROM arms WHERE id = ?', att.armId).toArray()[0];
-    if (named) this.sendName(ws, named.name);
+    const named = this.sql.exec<{ kind: string; name: string }>('SELECT kind, name FROM arms WHERE id = ?', att.armId).toArray()[0];
+    if (named) {
+      const instance = typeof params.instanceId === 'string' && INSTANCE.test(params.instanceId) ? `${named.kind}:${params.instanceId}` : '';
+      const profile = JSON.stringify({ rules: instance, registry: validRegistry(params.registry) } satisfies ArmProfile);
+      // Written only when it changed: a reconnect usually says the same.
+      if (this.setting(`arm:${att.armId}`) !== profile) this.sql.exec('INSERT OR REPLACE INTO settings(key, json) VALUES (?, ?)', `arm:${att.armId}`, profile);
+      this.sendPolicy(ws, att.armId);
+      this.sendName(ws, named.name);
+    }
     try {
       const listed = await this.request(ws, att.connId, 'tools/list', {});
       const tools = Array.isArray(listed.tools) ? (listed.tools as ArmTool[]).filter((t) => typeof t?.name === 'string') : [];
@@ -441,6 +501,66 @@ export class UserHub extends DurableObject<Env> {
     } catch {
       // closing: the next connection's hello gets it
     }
+  }
+
+  private setting(key: string): string | null {
+    return this.sql.exec<{ json: string }>('SELECT json FROM settings WHERE key = ?', key).toArray()[0]?.json ?? null;
+  }
+
+  private armProfile(armId: string): ArmProfile | null {
+    const json = this.setting(`arm:${armId}`);
+    return json ? (JSON.parse(json) as ArmProfile) : null;
+  }
+
+  private rules(key: string): Rules {
+    const json = this.setting(`rules:${key}`);
+    return json ? { ...NO_RULES, ...(JSON.parse(json) as Rules) } : NO_RULES;
+  }
+
+  private settingsUrl(armId: string): string {
+    return `${new URL(this.env.MCP_RESOURCE).origin}/app/settings?profile=${encodeURIComponent(armId)}`;
+  }
+
+  // arm/policy: the profile's rules, on every connection and on each change.
+  // The arm enforces them too (blocked websites only it can check).
+  private sendPolicy(ws: WebSocket, armId: string): void {
+    const profile = this.armProfile(armId);
+    const rules = profile?.rules ? this.rules(profile.rules) : NO_RULES;
+    try {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/policy', params: { ...rules, settingsUrl: this.settingsUrl(armId) } }));
+    } catch {
+      // closing: the next connection's hello gets it
+    }
+  }
+
+  // The settings page: every arm, what it said it can do, and its profile's rules.
+  async profileSettings(): Promise<ProfileSettings[]> {
+    return this.arms().map(({ id, kind, name, online }) => {
+      const profile = this.armProfile(id);
+      const settable = !!(profile?.rules && profile.registry.length);
+      return { id, kind, name, online, settable, registry: profile?.registry ?? [], rules: settable ? this.rules(profile!.rules) : NO_RULES };
+    });
+  }
+
+  // Saves a profile's rules from the settings page: only commands it listed,
+  // only Allow (nothing kept) or Off. Every connected arm of that profile hears
+  // them at once; AI apps' next tools/list leaves out what's Off.
+  async saveRules(armId: string, commands: Record<string, string>, blockedDomains: string[]): Promise<'ok' | 'gone'> {
+    if (!this.has() || !this.sql.exec('SELECT 1 FROM arms WHERE id = ?', armId).toArray().length) return 'gone';
+    const profile = this.armProfile(armId);
+    if (!profile?.rules || !profile.registry.length) return 'gone';
+    const listed = new Set(profile.registry.map((e) => e.name));
+    const off: Record<string, 'off'> = {};
+    for (const [name, rule] of Object.entries(commands)) if (listed.has(name) && rule === 'off') off[name] = 'off';
+    const rules: Rules = { commands: off, blockedDomains: blockedDomains.slice(0, BLOCKED_MAX) };
+    if (Object.keys(off).length || rules.blockedDomains.length) this.sql.exec('INSERT OR REPLACE INTO settings(key, json) VALUES (?, ?)', `rules:${profile.rules}`, JSON.stringify(rules));
+    else this.sql.exec('DELETE FROM settings WHERE key = ?', `rules:${profile.rules}`);
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() as Attachment | ViewerAttachment | null;
+      if (!att || att.viewer || !att.hello || ws.readyState !== WebSocket.OPEN) continue;
+      if (att.armId === armId || this.armProfile(att.armId)?.rules === profile.rules) this.sendPolicy(ws, att.armId);
+    }
+    return 'ok';
   }
 
   // An arm asks the hub to fetch a public URL for it (chrome-bridge's cloud
@@ -567,6 +687,18 @@ export class UserHub extends DurableObject<Env> {
       const att = this.live(ws);
       if (att) online.add(att.armId);
     }
+    // Each arm's Off tools, from its registry and its profile's rules (a few small rows).
+    const kept = new Map(this.sql.exec<{ key: string; json: string }>("SELECT key, json FROM settings WHERE key GLOB 'arm:*' OR key GLOB 'rules:*'").toArray().map((r) => [r.key, r.json]));
+    const offFor = (id: string): Record<string, OffRule> => {
+      const profile = kept.get(`arm:${id}`);
+      if (!profile) return {};
+      const { rules, registry } = JSON.parse(profile) as ArmProfile;
+      if (!rules) return {};
+      const commands = (JSON.parse(kept.get(`rules:${rules}`) ?? '{}') as Partial<Rules>).commands ?? {};
+      const off: Record<string, OffRule> = {};
+      for (const e of registry) if (commands[e.name] === 'off') for (const t of e.tools) off[t] = { command: e.name, title: e.title };
+      return off;
+    };
     return this.sql.exec<ArmRow>('SELECT * FROM arms ORDER BY created_at').toArray().map((r) => ({
       id: r.id,
       kind: r.kind,
@@ -576,6 +708,8 @@ export class UserHub extends DurableObject<Env> {
       tools: r.tools ? (JSON.parse(r.tools) as ArmTool[]) : [],
       selector: r.selector ?? 'arm',
       offlineHint: r.offline_hint,
+      off: offFor(r.id),
+      settingsUrl: this.settingsUrl(r.id),
     }));
   }
 
@@ -612,7 +746,8 @@ export class UserHub extends DurableObject<Env> {
     if (limited) return { content: [{ type: 'text', text: limited }], isError: true };
     const resolved = resolveCall(this.arms(), name, args, started);
     if (!resolved.ok) {
-      this.record(meta, null, name, false, Date.now() - started, resolved.note);
+      // An Off refusal names its profile and the command on the Activity page.
+      this.record(meta, resolved.off?.armId ?? null, name, false, Date.now() - started, resolved.note, resolved.off ? { ...NO_REPORT, command: resolved.off.command } : NO_REPORT);
       return { content: [{ type: 'text', text: resolved.error }], isError: true };
     }
     const { arm, tool } = resolved;

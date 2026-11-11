@@ -79,6 +79,7 @@ describe('resolveCall', () => {
       resolveCall([arm({}), arm({ name: 'oak', id: 'oak', online: false })], 'chrome', { profile: 'oak' }, now),
       resolveCall([arm({ name: 'birch', tools: [T('chrome')] }), arm({ name: 'oak', id: 'oak', online: false })], 'chrome_snap', {}, now),
       resolveCall([arm({})], 'nope', {}, now),
+      resolveCall([arm({ off: { snap: { command: 'snap', title: "Read a page's text and controls" } } })], 'chrome_snap', {}, now),
     ];
     const notes = cases.map((r) => (r.ok ? '' : r.note));
     expect(notes).toEqual([
@@ -89,8 +90,32 @@ describe('resolveCall', () => {
       'Chrome profile “oak” was offline.',
       'Chrome profile “birch” can\'t do this step; it may need an update.',
       "The AI app asked for a step that nothing you've connected offers.",
+      "The AI app tried to “Read a page's text and controls”, which you turned off for Chrome profile “birch”.",
     ]);
     for (const n of notes) expect(n).not.toMatch(/\barms?\b|\bhub\b|\bMCP\b|\bpair|tools\/list|\bPass\b|selector|the user/i);
+  });
+});
+
+describe('commands the person turned Off (D3a)', () => {
+  const OFF = { snap: { command: 'snap', title: 'Read a page' } };
+  it('leaves a tool out only when every arm offering it has it Off', () => {
+    expect(buildToolList([arm({ off: OFF })]).map((t) => t.name)).toEqual(['chrome']);
+    expect(buildToolList([arm({ off: OFF }), arm({ name: 'oak', id: 'oak' })]).map((t) => t.name)).toEqual(['chrome', 'chrome_snap']);
+  });
+  it('refuses a cached call on that arm with where to change it, naming an online arm that allows it', () => {
+    const settingsUrl = 'https://hub.test/app/settings?profile=birch';
+    expect(resolveCall([arm({ off: OFF, settingsUrl })], 'chrome_snap', {}, 0)).toEqual({
+      ok: false,
+      error: `snap is turned off for the chrome "birch" in the user's Cloud Bridge settings, so nothing ran. Do the task without it, or ask the user to allow it there (${settingsUrl}).`,
+      note: 'The AI app tried to “Read a page”, which you turned off for Chrome profile “birch”.',
+      off: { armId: 'a', command: 'snap' },
+    });
+    const two = [arm({ off: OFF }), arm({ name: 'oak', id: 'oak' }), arm({ name: 'elm', id: 'elm', online: false })];
+    const r = resolveCall(two, 'chrome_snap', { profile: 'birch' }, 0);
+    expect(!r.ok && r.error).toBe(`snap is turned off for the chrome "birch" in the user's Cloud Bridge settings, so nothing ran. oak allows it: pass profile as that name, or do the task without it, or ask the user to allow it there.`);
+    expect(resolveCall(two, 'chrome_snap', { profile: 'oak' }, 0)).toMatchObject({ ok: true, arm: { name: 'oak' } });
+    // The line tool reaches the arm, which refuses an Off line itself.
+    expect(resolveCall([arm({ off: OFF })], 'chrome', {}, 0)).toMatchObject({ ok: true });
   });
 });
 

@@ -51,6 +51,8 @@ const RULES: Record<string, Rule> = {
   // Signed in, but each view and change costs shared storage requests and writes
   // (the account page lists grants and reads every app's record).
   'GET /app': { binding: 'ARM_LIMIT', refuse: accountPage },
+  'GET /app/settings': { binding: 'ARM_LIMIT', refuse: accountPage },
+  'POST /app/settings': { binding: 'ARM_LIMIT', refuse: accountPage },
   'POST /app/rename': { binding: 'ARM_LIMIT', refuse: accountPage },
   'POST /app/disconnect': { binding: 'ARM_LIMIT', refuse: accountPage },
   'POST /app/forget': { binding: 'ARM_LIMIT', refuse: accountPage },
