@@ -24,12 +24,12 @@ interface ViewerAttachment {
 interface Attachment {
   viewer?: undefined;
   armId: string;
-  userId?: string; // whose hub this is (absent on sockets from before it existed)
+  userId: string; // whose hub this is
   // One per socket: a replaced connection's late close must not fail calls on its successor.
   connId: string;
   ready: boolean; // hello received and tools listed
-  hello?: boolean; // hello received (absent on sockets from before it existed)
-  since?: number; // when the socket opened (absent on sockets from before it existed)
+  hello: boolean; // hello received
+  since: number; // when the socket opened
 }
 
 // Arms send "ping" every 20s (answered by the runtime, never waking the object).
@@ -46,7 +46,7 @@ interface Pending {
 
 export interface CallMeta {
   client?: string; // the OAuth client id
-  clientName?: string; // its name when the user allowed it (absent on tokens from before D2)
+  clientName?: string; // its name when the user allowed it (none when it gave none)
   session?: string;
 }
 
@@ -232,10 +232,7 @@ export class UserHub extends DurableObject<Env> {
       image_too_big INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL, dropped INTEGER NOT NULL DEFAULT 0)`);
     // When files were kept (the bytes live in KV): the daily cap counts these.
     this.sql.exec('CREATE TABLE IF NOT EXISTS files(ts INTEGER NOT NULL, size INTEGER NOT NULL)');
-    // Whose hub this is: ctx.id.name when the caller used idFromName (every caller
-    // here does), kept for wakes that may lack it (a hibernated socket's message).
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    if (this.ctx.id.name) this.sql.exec("INSERT OR IGNORE INTO meta(key, value) VALUES ('user', ?)", this.ctx.id.name);
     // Rows from before plain notes (D2a) hold the AI app's text, which the
     // Activity page would show people: clear it once (the page then says only
     // that it didn't work).
@@ -358,7 +355,7 @@ export class UserHub extends DurableObject<Env> {
     for (const old of this.ctx.getWebSockets(row.id)) old.close(4000, 'replaced by a newer connection of the same arm');
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, [row.id]);
-    server.serializeAttachment({ armId: row.id, userId: armTokenUser(token) ?? undefined, connId: crypto.randomUUID(), ready: false, since: now } satisfies Attachment);
+    server.serializeAttachment({ armId: row.id, userId: armTokenUser(token)!, connId: crypto.randomUUID(), ready: false, hello: false, since: now } satisfies Attachment);
     this.sql.exec('UPDATE arms SET last_seen = ?, connects = ?, connects_since = ? WHERE id = ?', now, fresh ? 1 : (row.connects ?? 0) + 1, fresh ? now : row.connects_since, row.id);
     const headers = new Headers();
     if (request.headers.get('Sec-WebSocket-Protocol')) headers.set('Sec-WebSocket-Protocol', ARM_PROTOCOL);
@@ -424,7 +421,7 @@ export class UserHub extends DurableObject<Env> {
   // twice and asks for its tools: repeated on one socket it spent the account's
   // shared Durable Object write budget (100k rows/day) with no request cost (S1).
   private async hello(ws: WebSocket, att: Attachment, params: Record<string, unknown>): Promise<void> {
-    if (att.hello || att.ready) {
+    if (att.hello) {
       try {
         ws.close(4400, 'arm/hello is sent once per connection: reconnect to announce again');
       } catch {
@@ -505,9 +502,7 @@ export class UserHub extends DurableObject<Env> {
       }
     };
     const refuse = (message: string) => answer({ error: { code: -32000, message } });
-    // Sockets accepted before userId rode the attachment survive a deploy (found live).
-    const userId = att.userId ?? this.ctx.id.name ?? this.sql.exec<{ value: string }>("SELECT value FROM meta WHERE key = 'user'").toArray()[0]?.value;
-    if (!userId) return refuse("Cloud Bridge couldn't tell whose file this is, so nothing was kept; run the command without --out/--har (the result comes back inline), or try again in a minute");
+    const userId = att.userId;
     let bytes: Uint8Array;
     if (typeof params.text === 'string') bytes = new TextEncoder().encode(params.text);
     else if (typeof params.data === 'string') {
@@ -580,7 +575,7 @@ export class UserHub extends DurableObject<Env> {
   private live(ws: WebSocket, now = Date.now()): Attachment | null {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att?.ready || ws.readyState !== WebSocket.OPEN) return null;
-    const heard = Math.max(this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0, att.since ?? 0);
+    const heard = Math.max(this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0, att.since);
     if (now - heard <= HEARTBEAT_STALE_MS) return att;
     this.gone(ws, 'stopped sending heartbeats', heard);
     try {

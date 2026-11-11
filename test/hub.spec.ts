@@ -218,17 +218,6 @@ describe('pairing anti-phishing (S2c)', () => {
     expect(html).toContain('from around &#60;img src=x onerror=alert(1)&#62;, United States.');
     expect(html).not.toContain('<img src=x');
   });
-  it('a code from before S2c (no time or place) still shows its page', async () => {
-    const cookie = await cookieFor(newUser());
-    const s = await start(SEATTLE);
-    const store = oauthKv(env);
-    const { started, from, ...old } = JSON.parse((await store.get(`pair:${s.code}`)) as string);
-    expect([typeof started, from]).toEqual(['number', SEATTLE]);
-    await store.put(`pair:${s.code}`, JSON.stringify(old), { expirationTtl: 120 });
-    const html = await open(s.code, cookie, LAGOS);
-    expect(html).toContain('<p class="note">Code <code>');
-    expect(html).not.toContain('class="warn"');
-  });
 });
 
 describe('arm socket', () => {

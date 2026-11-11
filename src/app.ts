@@ -72,7 +72,6 @@ async function allowedApps(env: HubEnv, uid: string): Promise<AllowedApp[]> {
 }
 
 // Activity names an app by the name it had when allowed, else by its grant's.
-const appNames = (apps: AllowedApp[]) => Object.fromEntries(apps.map((a) => [a.clientId, a.name]));
 
 function browsersSection(arms: ArmDetails[], csrf: string, now: number): string {
   if (!arms.length) {
@@ -120,7 +119,7 @@ ${flash}${ACTIVITY_STYLE}<section><h2>Latest from AI apps</h2>
 <p id="activity-status" class="note">Connecting…</p>
 <div id="activity-list"></div>
 <p><a href="/app/activity">See everything AI apps did in your Chrome →</a></p>
-${activityData('strip', latest.rows, latest.more, appNames(apps))}</section>
+${activityData('strip', latest.rows, latest.more)}</section>
 ${browsersSection(arms, csrf, now)}
 ${appsSection(apps, csrf)}
 <h2>Add Cloud Bridge to an AI app</h2>
@@ -146,7 +145,7 @@ export async function activityPage(request: Request, env: HubEnv): Promise<Respo
   const session = await requireSession(request, env);
   if (session instanceof Response) return session;
   const hub = hubOf(env, session.uid);
-  const [apps, { rows, more }, live, keeping, csrf] = await Promise.all([allowedApps(env, session.uid), hub.activityRows(0, PAGE_ROWS), activityScript(), hub.keepingDetails(), csrfFor(session.uid, env.COOKIE_ENCRYPTION_KEY)]);
+  const [{ rows, more }, live, keeping, csrf] = await Promise.all([hub.activityRows(0, PAGE_ROWS), activityScript(), hub.keepingDetails(), csrfFor(session.uid, env.COOKIE_ENCRYPTION_KEY)]);
   const params = new URL(request.url).searchParams;
   const done = DONE[params.get('done') ?? ''];
   const problem = PROBLEM[params.get('error') ?? ''];
@@ -162,7 +161,7 @@ ${detailsSection(keeping, csrf)}
 <div id="activity-list"></div>
 <p><button class="secondary" id="activity-more" hidden>Show older steps</button></p>
 <noscript><p class="warn">This page needs JavaScript to show your activity.</p></noscript>
-${activityData('full', rows, more, appNames(apps))}`,
+${activityData('full', rows, more)}`,
     { script: live, connect: new URL(request.url).origin },
   );
 }

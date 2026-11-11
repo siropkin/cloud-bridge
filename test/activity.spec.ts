@@ -299,7 +299,8 @@ describe('the account page', () => {
     const data = JSON.parse(/<script type="application\/json" id="activity-data">([\s\S]*?)<\/script>/.exec(html)![1]);
     expect(data.mode).toBe('strip');
     expect(data.rows).toHaveLength(1);
-    expect(Object.values(data.apps)).toContain('Test client');
+    expect(data.rows[0].clientName).toBe('Test client');
+    expect(data).not.toHaveProperty('apps'); // names ride the rows: no grant list to fall back on
     expect(res.headers.get('Content-Security-Policy')).toContain('connect-src');
     expect(plain(html)).not.toMatch(JARGON);
     arm.ws.close();
@@ -307,7 +308,7 @@ describe('the account page', () => {
 
   it('a row can never close the data block early', async () => {
     const { activityData } = await import('../src/activity');
-    const html = activityData('full', [{ id: 1, ts: 1, client: '</script><script>alert(1)</script>', clientName: null, profile: null, profileGone: 0, tool: 't', command: null, site: null, ok: 1, ms: 1, error: null, details: 0 }], false, {});
+    const html = activityData('full', [{ id: 1, ts: 1, client: '</script><script>alert(1)</script>', clientName: null, profile: null, profileGone: 0, tool: 't', command: null, site: null, ok: 1, ms: 1, error: null, details: 0 }], false);
     expect(html.match(/<\/script>/g)).toHaveLength(1);
     expect(JSON.parse(/>([\s\S]*)<\/script>$/.exec(html)![1]).rows[0].client).toContain('</script>');
   });

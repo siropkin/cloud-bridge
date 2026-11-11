@@ -29,7 +29,7 @@ const CODE = String.raw`(() => {
   let more = data.more;
   const seen = new Set(rows.map((r) => r.id));
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-  const app = (r) => r.clientName || data.apps[r.client] || 'An AI app';
+  const app = (r) => r.clientName || 'An AI app';
   const profile = (r) => r.profile || (r.profileGone ? 'A removed Chrome profile' : 'No Chrome profile reached');
   const what = (r) => r.command || r.tool;
   const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
@@ -220,8 +220,8 @@ export const ACTIVITY_STYLE = `<style>.steps{list-style:none;padding:0;margin:.7
 
 // The rows and what the script needs, as a data block (never executed, so the
 // CSP's script hash doesn't cover it; "<" is escaped so no row can end it).
-export function activityData(mode: 'full' | 'strip', rows: ActivityView[], more: boolean, apps: Record<string, string>): string {
-  const body = JSON.stringify({ mode, rows, more, apps, gap: GROUP_GAP_MS, strip: STRIP_ROWS, scriptMax: SCRIPT_STEPS_MAX }).replace(/</g, '\\u003c');
+export function activityData(mode: 'full' | 'strip', rows: ActivityView[], more: boolean): string {
+  const body = JSON.stringify({ mode, rows, more, gap: GROUP_GAP_MS, strip: STRIP_ROWS, scriptMax: SCRIPT_STEPS_MAX }).replace(/</g, '\\u003c');
   return `<script type="application/json" id="activity-data">${body}</script>`;
 }
 

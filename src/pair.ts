@@ -24,8 +24,8 @@ export interface Place {
 interface PairRecord {
   kind: string;
   name: string;
-  started?: number; // records from before S2c have neither
-  from?: Place;
+  started: number;
+  from?: Place; // none when Cloudflare didn't place the request
   pollHash: string;
   // approving: claimed by one Connect click while its arm record is made.
   status: 'pending' | 'approving' | 'approved' | 'denied';
@@ -126,7 +126,7 @@ export async function pairPage(request: Request, env: HubEnv): Promise<Response>
   const here = placeOf(request);
   const elsewhere = Boolean(there?.country && here.country && there.country !== here.country);
   const where = placeText(there);
-  const when = record.started ? `Started ${agoText(Date.now() - record.started)}${where ? `, from ${where}` : ''}. ` : '';
+  const when = `Started ${agoText(Date.now() - record.started)}${where ? `, from ${where}` : ''}. `;
   const warning = elsewhere
     ? `<p class="warn"><strong>Careful: this didn't start where you are.</strong> It started from ${escapeHtml(placeText(there)!)}, and this page opened from ${escapeHtml(placeText(here)!)}. Click Deny unless you're sure you just clicked Connect yourself.</p>\n`
     : '';

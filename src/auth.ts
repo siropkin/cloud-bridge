@@ -9,7 +9,7 @@ export interface Props extends Record<string, unknown> {
   userId: string; // "gh-<numeric GitHub id>": stable across renames (the OAuth library forbids ":")
   login: string;
   // The AI app's name as the user allowed it, so Activity still names it after
-  // it's removed (tokens from before D2 lack it: the page falls back to the grant's).
+  // it's removed (none when the app gave none).
   clientName?: string;
 }
 
