@@ -252,7 +252,7 @@ describe('deleting your data', () => {
     const res = await form('/app/delete', cookie, { csrf });
     const html = await res.text();
     expect(res.status).toBe(200);
-    expect(html).toContain('<h1>✅ Your Cloud Bridge data is deleted</h1>');
+    expect(html).toContain('<h1><span class="mark" aria-hidden="true">✅</span>Your Cloud Bridge data is deleted</h1>');
     expect(html).toContain(`Cloud Bridge signed out 2 Chrome profiles and 1 AI app, and deleted what it kept for <strong>@${user.login}</strong>. You're signed out here too.`);
     expect(html).toContain('href="https://github.com/settings/applications"');
     expect(html).not.toContain("couldn't be listed");

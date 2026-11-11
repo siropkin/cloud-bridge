@@ -97,20 +97,20 @@ export function page(title: string, body: string, init: { status?: number; heade
   const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>${escapeHtml(title === 'Cloud Bridge' ? title : `${title} · Cloud Bridge`)}</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem;color:#222}h1{font-size:1.4rem}
-button{font:inherit;padding:.5rem 1.1rem;border-radius:.4rem;border:1px solid #7c3aed;background:#7c3aed;color:#fff;cursor:pointer}
+<style>body{font:16px/1.6 system-ui,sans-serif;max-width:42rem;margin:3.5rem auto 5rem;padding:0 1.5rem;color:#222}h1{font-size:1.6rem;margin:0 0 1rem}h1 .mark{margin-right:.55rem}h2{font-size:1.2rem;margin:2rem 0 1rem}p{margin:.85rem 0}
+button{font:inherit;padding:.6rem 1.3rem;border-radius:.5rem;border:1px solid #7c3aed;background:#7c3aed;color:#fff;cursor:pointer}
 button.secondary{background:#fff;color:#7c3aed}.note{color:#666;font-size:.9rem}code{background:#f3f0ff;padding:.1rem .3rem;border-radius:.2rem}a{color:#6d28d9}
-a.button{display:inline-block;text-decoration:none;font-weight:600;padding:.45rem 1rem;border-radius:.4rem;border:1px solid #7c3aed;color:#7c3aed}
-.link{display:flex;gap:.5rem;align-items:center;margin:.5rem 0}.link code{user-select:all;word-break:break-all}
-section{border:1px solid #ddd6fe;border-radius:.6rem;padding:.2rem 1rem 1rem;margin:1rem 0}ol{padding-left:1.3rem}li{margin:.25rem 0}
-.warn{border-left:4px solid #dc2626;background:#fef2f2;padding:.5rem .8rem;border-radius:.3rem}
-.ok{border-left:4px solid #16a34a;background:#f0fdf4;padding:.5rem .8rem;border-radius:.3rem}
-button.danger{background:#dc2626;border-color:#dc2626}input{font:inherit;padding:.4rem .5rem;border:1px solid #c4b5fd;border-radius:.4rem;min-width:0;flex:1}
-.item{border-top:1px solid #ede9fe;padding:.4rem 0}.item:first-of-type{border-top:0}.item p{margin:.3rem 0}form.row{display:flex;gap:.5rem;align-items:center;margin:.4rem 0}
-.dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;margin-right:.45rem;background:#9ca3af}.dot.on{background:#16a34a}
-details{margin:1rem 0}summary{cursor:pointer;color:#7c3aed}
+a.button{display:inline-block;text-decoration:none;font-weight:600;padding:.55rem 1.2rem;border-radius:.5rem;border:1px solid #7c3aed;color:#7c3aed}
+.link{display:flex;gap:.75rem;align-items:center;margin:1rem 0}.link code{user-select:all;word-break:break-all}
+section{border:1px solid #ddd6fe;border-radius:.9rem;padding:1.5rem 1.75rem;margin:1.75rem 0}section>h2:first-child{margin-top:0}section>:last-child{margin-bottom:0}ol{padding-left:1.5rem}li{margin:.55rem 0}
+.warn{border-left:4px solid #dc2626;background:#fef2f2;padding:.8rem 1rem;border-radius:.4rem;margin:1.25rem 0}
+.ok{border-left:4px solid #16a34a;background:#f0fdf4;padding:.8rem 1rem;border-radius:.4rem;margin:1.25rem 0}
+button.danger{background:#dc2626;border-color:#dc2626}input{font:inherit;padding:.55rem .7rem;border:1px solid #c4b5fd;border-radius:.5rem;min-width:0;flex:1}
+.item{border-top:1px solid #ede9fe;padding:1.1rem 0}.item:first-of-type{border-top:0;padding-top:0}.item p{margin:.4rem 0}form.row{display:flex;gap:.75rem;align-items:center;margin:.85rem 0}
+.dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;margin-right:.6rem;background:#9ca3af}.dot.on{background:#16a34a}
+details{margin:1.5rem 0}summary{cursor:pointer;color:#7c3aed;padding:.3rem 0}
 @media(prefers-color-scheme:dark){body{background:#16131f;color:#eee}a{color:#c4b5fd}button.secondary{background:#16131f}code{background:#2a2340}.note{color:#aaa}a.button{color:#c4b5fd;border-color:#a78bfa}section{border-color:#3b2f5c}.warn{background:#3a1518}.ok{background:#11301c}input{background:#16131f;color:#eee;border-color:#3b2f5c}.item{border-color:#3b2f5c}summary{color:#c4b5fd}}</style>
-<h1>${init.icon ?? '🟣'} ${escapeHtml(title)}</h1>${body}${scripts.map((x) => `<script>${x.code}</script>`).join('')}</html>`;
+<h1><span class="mark" aria-hidden="true">${init.icon ?? '🟣'}</span>${escapeHtml(title)}</h1>${body}${scripts.map((x) => `<script>${x.code}</script>`).join('')}</html>`;
   return new Response(html, { status: init.status ?? 200, headers });
 }
 

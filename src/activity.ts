@@ -210,12 +210,12 @@ export function activityScript(): Promise<InlineScript> {
   return (script ??= inlineScript(CODE));
 }
 
-export const ACTIVITY_STYLE = `<style>.steps{list-style:none;padding:0;margin:.3rem 0}.step{display:flex;flex-wrap:wrap;gap:.15rem .6rem;align-items:baseline;padding:.3rem 0;border-top:1px solid #ede9fe;font-size:.92rem}
-.step .when,.step .ms{color:#666;font-variant-numeric:tabular-nums}.step .who{font-weight:600}.step .mark{margin-left:auto;color:#16a34a;font-weight:700}.step.bad .mark{color:#dc2626}.step .why{flex-basis:100%;color:#b91c1c;font-size:.85rem}
-.filters{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:1rem 0}.filters select{font:inherit;padding:.35rem;border:1px solid #c4b5fd;border-radius:.4rem;background:inherit;color:inherit}.filters label{font-size:.92rem}
+export const ACTIVITY_STYLE = `<style>.steps{list-style:none;padding:0;margin:.75rem 0}.step{display:flex;flex-wrap:wrap;gap:.4rem 1rem;align-items:baseline;padding:.8rem 0;margin:0;border-top:1px solid #ede9fe;font-size:.95rem}
+.step .when,.step .ms{color:#666;font-variant-numeric:tabular-nums}.step .who{font-weight:600}.step .mark{margin-left:auto;color:#16a34a;font-weight:700}.step.bad .mark{color:#dc2626}.step .why{flex-basis:100%;color:#b91c1c;font-size:.88rem;margin-top:.1rem}
+.filters{display:flex;flex-wrap:wrap;gap:.75rem 1rem;align-items:center;margin:1.75rem 0 1.25rem}.filters select{font:inherit;padding:.55rem .7rem;border:1px solid #c4b5fd;border-radius:.4rem;background:inherit;color:inherit}.filters label{font-size:.92rem}
 .step .linkish{font:inherit;font-size:.85rem;padding:0;border:0;background:none;color:#6d28d9;cursor:pointer;text-decoration:underline}.step .gone{color:#666}
 .step .more{flex-basis:100%;margin:.6rem 0 .2rem}.step .more pre{white-space:pre-wrap;word-break:break-word;background:#f3f0ff;padding:.8rem 1rem;border-radius:.5rem;margin:.4rem 0 1rem;font-size:.86rem;line-height:1.5;max-height:20rem;overflow:auto}.step .more .label{font-size:.82rem;color:#666;margin-top:.5rem}.step .more img{max-width:100%;border:1px solid #ddd6fe;border-radius:.5rem;margin-top:.5rem}
-.live{color:#15803d}details.group{border-top:1px solid #ddd6fe;margin:0;padding:.4rem 0}details.group summary{color:inherit}
+.live{color:#15803d}details.group{border-top:1px solid #ddd6fe;margin:0;padding:1rem 0}details.group>p.note{margin:.6rem 0 0}details.group summary{color:inherit}
 @media(prefers-color-scheme:dark){.step .linkish{color:#c4b5fd}.step .more pre{background:#2a2340}.step .more .label,.step .gone{color:#aaa}.step{border-color:#3b2f5c}.step .when,.step .ms{color:#aaa}.step .why{color:#fca5a5}.live{color:#4ade80}details.group{border-color:#3b2f5c}}</style>`;
 
 // The rows and what the script needs, as a data block (never executed, so the

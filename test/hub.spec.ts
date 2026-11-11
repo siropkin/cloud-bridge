@@ -554,7 +554,7 @@ describe('pages people read', () => {
     const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1];
     const done = await hub('/pair/approve', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code: start.code, csrf, decision: 'approve' }) });
     const next = await done.text();
-    expect(next).toContain('<h1>✅ Chrome profile “poplar” is connected</h1>');
+    expect(next).toContain('<h1><span class="mark" aria-hidden="true">✅</span>Chrome profile “poplar” is connected</h1>');
     expect(next).toContain("You're done: you can close this tab.");
     expect(next).toContain('Next: add Cloud Bridge to your AI app');
     expect(next).toContain(`<code>${ORIGIN}/mcp</code>`);
